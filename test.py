@@ -13,7 +13,7 @@ BERT_MODEL_TYPE = 'bert-base-cased'
 Pandas = namedtuple('Pandas', ['Index', 'text', 'selected_text'])
 
 
-class TestTweetDataset(unittest.TestCase):
+class DatasetTestCase(unittest.TestCase):
     def assertDatasetItemEqual(self, expected_item: tuple, actual_item: tuple):
         for expected_element, actual_element in zip(expected_item, actual_item):
             if isinstance(expected_element, Tensor):
@@ -31,6 +31,8 @@ class TestTweetDataset(unittest.TestCase):
                 pass
         self.fail("Unable to find item in list")
 
+
+class TestTweetDataset(DatasetTestCase):
     def test(self):
         df = pd.DataFrame({
             'text': ['hello worldd', 'hi moon'],
