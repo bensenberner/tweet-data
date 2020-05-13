@@ -103,44 +103,13 @@ class TweetDataset(data.Dataset):
         'neutral': 2
     }
 
-    """
-    # TODO: change to direct ben_tokenizer
-    def __init__(self, df, bert_tokenizer):
-        ben_tokenizer = BertTokenLabels(bert_tokenizer)
-        # indexed labels is a list of [(enumerate_row_idx, bert_input_ids, start_idx, end_idx, labels)]
-        # TODO: just iterate over all the rows, create the labels one row at a time, then you'll
-        # have access to the "idx" and the bert_input_ids. in other words, move "create bert based labels" up to this fn
-        # since most of the code here is just getting values back out from there
-        indexed_labels, error_indexes = ben_tokenizer.create_bert_based_labels(df)
-        df_filtered = df.drop(error_indexes)
-
-        # For logging
-        self.error_indexes = error_indexes
-        self.indexes = [idx for idx, bert_input_ids, start_idx, end_idx, label in indexed_labels]
-        self.bert_input_tokens = pad_sequence(
-            [torch.tensor(bert_input_ids) for idx, bert_input_ids, start_idx, end_idx, label in indexed_labels],
-            batch_first=True
-        )
-        self.bert_attention_mask = torch.min(self.bert_input_tokens, torch.tensor(1)).detach()
-
-        # Append torch.tensor([0]) to start because input_tokens include [CLS] token as the first one, and [SEQ] as last one.
-        self.selected_ids = pad_sequence(
-            [torch.tensor([0] + label + [0]) for idx, bert_input_ids, start_idx, end_idx, label in indexed_labels],
-            batch_first=True
-        ).float()  # Float for BCELoss
-
-        # Offset by one for [CLS] and [SEQ]
-        self.selected_ids_start_end = torch.tensor(
-            [(start_idx + 1, end_idx + 1) for idx, bert_input_ids, start_idx, end_idx, label in indexed_labels])
-
-        self.sentiment_labels = torch.tensor([self.SENTIMENT_MAP[x] for x in df_filtered['sentiment']])
-    """
-
     def __init__(self, df, bert_tokenizer):
         # TODO: simply use init instead of another thing
         # bert_token_labels = BertTokenLabels(bert_tokenizer)
         selected_ids_start_end_idx_raw = []
-        labels = []
+        # each label is a list of 1s and 0s, representing whether the corresponding bert token
+        # was contained in the selected text or not
+        labels: List[List[int]] = []
         bert_input_ids_unpadded = []
         self.indexes = []
         self.error_indexes = []
@@ -154,13 +123,14 @@ class TweetDataset(data.Dataset):
                 # TODO (speedup): you are already tokenizing in create_label_list. tokenize outside and pass it in
                 bert_input_ids = bert_tokenizer.encode(row.text)
                 bert_input_ids_unpadded.append(bert_input_ids)
-                # Offset by one for [CLS] and [SEQ]
-                selected_ids_start_end_idx_raw.append((new_label.start_idx + 1, new_label.end_idx + 1))
+                selected_ids_start_end_idx_raw.append((new_label.start_idx, new_label.end_idx))
                 labels.append(new_label.label)
             except AssertionError:
                 # TODO: is this the same index as it was before??
+                # TODO: maybe do some sort of checking to indicate the error source
                 self.error_indexes.append(row.Index)
         df_filtered = df.drop(self.error_indexes)
+        # TODO: rename since "tokens" is overloaded. these are integer ids, not strings.
         self.bert_input_tokens = pad_sequence(
             [torch.tensor(e) for e in bert_input_ids_unpadded],
             batch_first=True
@@ -168,7 +138,13 @@ class TweetDataset(data.Dataset):
         # TODO: rename to masks
         self.bert_attention_mask = torch.min(self.bert_input_tokens, torch.tensor(1)).detach()
         # TODO: rename this somehow
-        self.selected_ids_start_end = torch.tensor(selected_ids_start_end_idx_raw)
+
+        # Offset by one for [CLS] and [SEQ]
+        self.selected_ids_start_end = torch.tensor([
+            (start_idx + 1, end_idx + 1)
+            for start_idx, end_idx in selected_ids_start_end_idx_raw
+        ])
+
         # Append torch.tensor([0]) to start because input_tokens include [CLS] token as the first one
         # and [SEQ] as last one.
         self.selected_ids = pad_sequence(
