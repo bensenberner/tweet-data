@@ -131,13 +131,12 @@ class TweetDataset(data.Dataset):
                 # TODO: maybe do some sort of checking to indicate the error source
                 self.error_indexes.append(row.Index)
         df_filtered = df.drop(self.error_indexes)
-        # TODO: rename since "tokens" is overloaded. these are integer ids, not strings.
-        self.bert_input_tokens = pad_sequence(
+        # this is X, the input matrix we will feed into the model.
+        self.all_bert_input_ids: torch.Tensor = pad_sequence(
             [torch.tensor(e) for e in bert_input_ids_unpadded],
             batch_first=True
         )
-        # TODO: rename to masks
-        self.bert_attention_mask = torch.min(self.bert_input_tokens, torch.tensor(1)).detach()
+        self.bert_attention_masks = torch.min(self.all_bert_input_ids, torch.tensor(1)).detach()
 
         # TODO: rename this somehow
         # Offset by one for [CLS] and [SEQ]
@@ -152,17 +151,16 @@ class TweetDataset(data.Dataset):
             [torch.tensor([0] + label + [0]) for label in labels],
             batch_first=True
         ).float()  # Float for BCELoss
-        # TODO: use pd.apply or something
-        self.sentiment_labels = torch.tensor([self.SENTIMENT_MAP[x] for x in df_filtered['sentiment']])
+        self.sentiment_labels = torch.tensor(df_filtered['sentiment'].apply(self.SENTIMENT_MAP.get))
 
     def __len__(self):
-        return len(self.bert_input_tokens)
+        return len(self.all_bert_input_ids)
 
     def __getitem__(self, idx):
         return (
             self.indexes[idx],
-            self.bert_input_tokens[idx],
-            self.bert_attention_mask[idx],
+            self.all_bert_input_ids[idx],
+            self.bert_attention_masks[idx],
             self.selected_ids_start_end[idx],
             self.selected_ids[idx],
             self.sentiment_labels[idx]
