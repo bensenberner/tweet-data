@@ -1,8 +1,15 @@
 from typing import List
 
 import torch
+import transformers
+from torch import nn
 from torch.nn.utils.rnn import pad_sequence
+from torch.optim import Adam
 from torch.utils import data
+
+from utils import load_small_df, RANDOM_SEED
+
+BERT_MODEL_TYPE = 'bert-base-cased'
 
 
 class BenTokenizer:
@@ -165,3 +172,236 @@ class TweetDataset(data.Dataset):
             self.selected_ids[idx],
             self.sentiment_labels[idx]
         )
+
+
+class NetworkV1(nn.Module):
+    def __init__(self, bert_model_type, selected_id_loss_fn=nn.BCEWithLogitsLoss()):
+        super().__init__()
+        self.bert = transformers.BertModel.from_pretrained(bert_model_type)
+
+        # Freeze weights
+        for param in self.bert.parameters():
+            param.requires_grad = False
+
+        config = transformers.BertConfig.from_pretrained(bert_model_type)
+        self.selected_id_loss_fn = selected_id_loss_fn
+        self.d1 = nn.Dropout(0.1)
+        self.l1 = nn.Linear(config.hidden_size, 1)
+
+    def forward(self, input_ids, attention_mask, selected_ids, sentiment_labels):
+        batch_size = input_ids.shape[0]
+
+        last_hidden_state, _ = self.bert(input_ids, attention_mask)
+        last_hidden_state = self.d1(last_hidden_state)
+        logits = self.l1(last_hidden_state)
+
+        loss_fn = self.selected_id_loss_fn
+        loss = loss_fn(logits.view(batch_size, -1), selected_ids)
+
+        return logits, loss
+
+
+class NetworkV2(nn.Module):
+    def __init__(self, bert_model_type, selected_id_loss_fn=nn.BCEWithLogitsLoss()):
+        super().__init__()
+        self.bert = transformers.BertModel.from_pretrained(bert_model_type)
+
+        # Freeze weights
+        for param in self.bert.parameters():
+            param.requires_grad = False
+
+        config = transformers.BertConfig.from_pretrained(bert_model_type)
+        self.selected_id_loss_fn = selected_id_loss_fn
+        self.d1 = nn.Dropout(0.1)
+
+        self.linear_layers = nn.ModuleList([
+            nn.Linear(config.hidden_size, 1),
+            nn.Linear(config.hidden_size, 1),
+            nn.Linear(config.hidden_size, 1)]
+        )
+
+    def forward(self, input_ids, attention_mask, selected_ids, sentiment_labels):
+        batch_size = input_ids.shape[0]
+
+        last_hidden_state, _ = self.bert(input_ids, attention_mask)
+        last_hidden_state = self.d1(last_hidden_state)
+        logits = torch.stack([l(last_hidden_state) for l in self.linear_layers], axis=1).view(batch_size, 3, -1)
+
+        # Probably some gather magic to be done here.
+        selected_logits = torch.stack([logits[i][lbl] for i, lbl in enumerate(sentiment_labels)], axis=0)
+
+        loss_fn = self.selected_id_loss_fn
+        loss = loss_fn(selected_logits.view(batch_size, -1), selected_ids)
+        return selected_logits, loss
+
+
+class NetworkV3(nn.Module):
+    '''
+    This network uses the last two hidden layers of the BERT transformer
+    to develop predictions.
+    '''
+
+    def __init__(self, bert_model_type, selected_id_loss_fn=nn.BCEWithLogitsLoss()):
+        super().__init__()
+        config = transformers.BertConfig.from_pretrained(bert_model_type)
+        config.output_hidden_states = True
+        self.bert = transformers.BertModel.from_pretrained(bert_model_type, config=config)
+
+        # Freeze weights
+        for param in self.bert.parameters():
+            param.requires_grad = False
+
+        self.selected_id_loss_fn = selected_id_loss_fn
+        self.d1 = nn.Dropout(0.1)
+
+        self.linear_layers = nn.ModuleList([
+            nn.Linear(config.hidden_size * 2, 1),
+            nn.Linear(config.hidden_size * 2, 1),
+            nn.Linear(config.hidden_size * 2, 1)]
+        )
+
+    def forward(self, input_ids, attention_mask, selected_ids, sentiment_labels):
+        batch_size = input_ids.shape[0]
+
+        last_hidden_state, _, all_hidden_states = self.bert(input_ids, attention_mask)
+        all_hidden_states = torch.cat((all_hidden_states[-1], all_hidden_states[-2]), dim=-1)
+
+        all_hidden_states = self.d1(all_hidden_states)
+        logits = torch.stack([l(all_hidden_states) for l in self.linear_layers], axis=1).view(batch_size, 3, -1)
+
+        # Probably some gather magic to be done here.
+        selected_logits = torch.stack([logits[i][lbl] for i, lbl in enumerate(sentiment_labels)], axis=0)
+
+        loss_fn = self.selected_id_loss_fn
+        loss = loss_fn(selected_logits.view(batch_size, -1), selected_ids)
+        return selected_logits, loss
+
+
+# Just for fun
+def differentiable_log_jaccard(logits, actual):
+    A = torch.sigmoid(logits)
+    B = actual
+    C = A * B
+    sum_c = torch.sum(C, axis=1)
+    # Numerically stable log.
+    return -torch.mean(torch.log(sum_c) - torch.log(torch.sum(A, axis=1) + torch.sum(B, axis=1) - sum_c))
+
+
+def differentiable_log_jaccard_batch(logits, actual):
+    A = torch.sigmoid(logits)
+    B = actual
+    C = A * B
+    sum_c = torch.sum(C)
+    return -torch.log(sum_c / (torch.sum(A) + torch.sum(B) - sum_c))
+
+
+# def create_train_map(train_df_filtered, ben_tokenizer):
+#     return {
+#         i: data
+#         for i, data in
+#         list(
+#             train_df_filtered.apply(
+#                 lambda row:
+#                 (row.name, (row.text, row.selected_text, *ben_tokenizer.tokenize_with_index(row.text))),
+#                 axis=1
+#             )
+#         )
+#     }
+
+
+def ls_find_start_end(b, threshold=0.6):
+    a = b - threshold
+    max_so_far = a[0]
+    cur_max = a[0]
+    start_idx = 0
+    max_start_idx, max_end_idx = 0, 0
+    for i in range(1, len(a)):
+        # cur_max = max(a[i], )
+        # cur_max = a[i] + max(0, cur_max)
+        if a[i] > cur_max + a[i]:
+            cur_max = a[i]
+            start_idx = i
+        else:
+            cur_max = cur_max + a[i]
+
+        # max_so_far = max(max_so_far, cur_max)
+        if max_so_far < cur_max:
+            max_so_far = cur_max
+            max_start_idx = start_idx
+            max_end_idx = i + 1
+
+    return max_start_idx, max_end_idx, max_so_far
+
+
+# Calculating jaccard from start_end indices
+def jaccard_from_start_end(s1, e1, s2, e2):
+    A_ = e1 - s1
+    B_ = int(e2 - s2)
+    C_ = int(max(min(e1, e2) - max(s1, s2), 0))
+    return C_ / (A_ + B_ - C_)
+
+
+def jaccard(str1, str2, debug=False):
+    a = set(str1.lower().split())
+    b = set(str2.lower().split())
+    c = a.intersection(b)
+    if debug:
+        print(a)
+        print(b)
+        print(c)
+    return float(len(c)) / (len(a) + len(b) - len(c))
+
+
+if __name__ == "__main__":
+    torch.manual_seed(RANDOM_SEED)
+    train_df = load_small_df()
+    bert_tokenizer = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
+    ben_tokenizer = BenTokenizer(bert_tokenizer)
+    train_dataset = TweetDataset(train_df, bert_tokenizer)
+    error_indexes = train_dataset.error_indexes
+    train_df_filtered = train_df.drop(error_indexes)
+
+    if torch.cuda.is_available():
+        dev = "cuda:0"
+    else:
+        dev = "cpu"
+    # TODO(pycharm): change
+    n_epochs = 1
+    lr = 0.001
+    model = NetworkV3(BERT_MODEL_TYPE, differentiable_log_jaccard).to(dev)
+    optim = Adam(model.parameters(), lr=lr)
+    losses = []
+    train_generator = data.DataLoader(train_dataset, batch_size=128, shuffle=True)
+    # TODO(pycharm): couldnt get tqdm
+    epoch_bar = range(n_epochs)
+    secondary_bar = range(len(train_generator))
+    for epoch in epoch_bar:
+        for df_idx, input_tokens, attention_mask, _, selected_ids, sentiment_labels in train_generator:
+            logits, loss = model(input_tokens.to(dev), attention_mask.to(dev), selected_ids.to(dev),
+                                 sentiment_labels.to(dev))
+            losses.append(loss.item())
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
+        print(f"Epoch {epoch}")
+
+    threshold = 0.5
+    train_df_map = {i: data for i, data in list(train_df_filtered.apply(
+        lambda row: (row.name, (row.text, row.selected_text, *ben_tokenizer.tokenize_with_index(row.text))), 1))}
+    all_model_jaccard_scores = []
+    all_benchmark_jaccard_scores = []
+    for df_idx, input_tokens, attention_mask, start_end, selected_ids, sentiment_labels in train_generator:
+        with torch.no_grad():
+            logits, loss = model(input_tokens.to(dev), attention_mask.to(dev), selected_ids.to(dev),
+                                 sentiment_labels.to(dev))
+        pvecs = torch.sigmoid(logits)
+        pred_start_end = [ls_find_start_end(pvec, threshold) for pvec in pvecs]
+        for i, (s1, e1, _), (s2, e2) in zip(df_idx, pred_start_end, start_end):
+            original_text, selected_text, bert_tokens, tok_to_orig_index, orig_to_tok_index = train_df_map[int(i)]
+            s1 = max(s1, 1)
+            e1 = min(e1, len(bert_tokens) + 1)
+            all_model_jaccard_scores.append((i, jaccard_from_start_end(s1, e1, s2, e2)))
+            predicted_selected_text = BenTokenizer.recreate_original(original_text, tok_to_orig_index, s1 - 1, e1 - 1)
+            all_benchmark_jaccard_scores.append((i, jaccard(selected_text, predicted_selected_text)))
+    print(len(all_benchmark_jaccard_scores))
+    print(len(all_model_jaccard_scores))

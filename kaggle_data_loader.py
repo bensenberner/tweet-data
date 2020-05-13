@@ -1,16 +1,18 @@
 from typing import List, Tuple
 
 import pandas as pd
-import transformers
 import torch
+import transformers
+from torch import nn
 from torch.nn.utils.rnn import pad_sequence
+from torch.optim import Adam
 from torch.utils import data
 
 
 class TokenizedString:
     def __init__(self, bert_tokenizer, full_text, selected_text):
         self.selected_text = selected_text
-        self.spaced_orig_tokens = full_text.split(' ')
+        self.spaced_orig_tokens = full_text.split(" ")
         # list of len(original_str.split(' ')). Each index represents an orig token,
         # each value is the index of the FIRST bert token that corresponds to the orig token
         self.bert_to_spaced_orig_idx = []
@@ -28,7 +30,9 @@ class TokenizedString:
                 self.bert_to_spaced_orig_idx.append(spaced_orig_idx)
                 self.bert_tokens.append(sub_token)
 
-    def make_orig_substring_from_bert_idxes(self, bert_start_idx: int, bert_end_idx: int) -> str:
+    def make_orig_substring_from_bert_idxes(
+        self, bert_start_idx: int, bert_end_idx: int
+    ) -> str:
         """
         Given a start and end index from the bert token list, this will create
         a substring from the original string composed of the bert tokens within
@@ -39,9 +43,7 @@ class TokenizedString:
         """
         orig_start_idx = self.bert_to_spaced_orig_idx[bert_start_idx]
         orig_end_idx = self.bert_to_spaced_orig_idx[bert_end_idx - 1]
-        return ' '.join(
-            self.spaced_orig_tokens[orig_start_idx: orig_end_idx + 1]
-        )
+        return " ".join(self.spaced_orig_tokens[orig_start_idx : orig_end_idx + 1])
 
 
 class TokenizedStrings:
@@ -50,7 +52,7 @@ class TokenizedStrings:
             row_idx: TokenizedString(
                 bert_tokenizer=bert_tokenizer,
                 full_text=row.text,
-                selected_text=row.selected_text
+                selected_text=row.selected_text,
             )
             for row_idx, row in train_df.iterrows()
         }
@@ -72,8 +74,13 @@ class LabelData:
         self.start_idx, self.end_idx = self.find(split_text, split_selected_text)
         if self.start_idx == -1:
             # TODO: get a count of how often this happens
-            raise AssertionError(f"Could not find '{row.selected_text}' in '{row.text}'")
-        self.label = [1 if self.start_idx <= idx < self.end_idx else 0 for idx in range(len(split_text))]
+            raise AssertionError(
+                f"Could not find '{row.selected_text}' in '{row.text}'"
+            )
+        self.label = [
+            1 if self.start_idx <= idx < self.end_idx else 0
+            for idx in range(len(split_text))
+        ]
 
     @staticmethod
     def find(haystack: List[str], needle: List[str]) -> Tuple[int, int]:
@@ -86,29 +93,27 @@ class LabelData:
         """
         for start_offset in [0, 1]:
             for end_offset in [0, -1]:
-                truncated_needle = needle[0 + start_offset: len(needle) + end_offset]
+                truncated_needle = needle[0 + start_offset : len(needle) + end_offset]
                 if len(truncated_needle) == 0:
                     continue
                 for haystack_idx in range(len(haystack)):
                     # TODO: can I handle empty strings??
                     if (
                         haystack[haystack_idx] == truncated_needle[0]
-                        and haystack[haystack_idx:haystack_idx + len(truncated_needle)]
+                        and haystack[
+                            haystack_idx : haystack_idx + len(truncated_needle)
+                        ]
                     ):
                         # always returning a range of len(needle)
                         return (
                             haystack_idx - start_offset,
-                            haystack_idx - start_offset + len(needle)
+                            haystack_idx - start_offset + len(needle),
                         )
         return -1, -1
 
 
 class TweetDataset(data.Dataset):
-    SENTIMENT_MAP = {
-        'negative': 0,
-        'positive': 1,
-        'neutral': 2
-    }
+    SENTIMENT_MAP = {"negative": 0, "positive": 1, "neutral": 2}
 
     def __init__(self, df, bert_tokenizer):
         selected_ids_start_end_idx_raw = []
@@ -124,7 +129,9 @@ class TweetDataset(data.Dataset):
                 label_data = LabelData(bert_tokenizer, row)
                 self.indexes.append(row.Index)
                 bert_input_ids_unpadded.append(bert_tokenizer.encode(row.text))
-                selected_ids_start_end_idx_raw.append((label_data.start_idx, label_data.end_idx))
+                selected_ids_start_end_idx_raw.append(
+                    (label_data.start_idx, label_data.end_idx)
+                )
                 labels.append(label_data.label)
             except AssertionError:
                 # TODO: is this the same index as it was before??
@@ -133,25 +140,29 @@ class TweetDataset(data.Dataset):
         df_filtered = df.drop(self.error_indexes)
         # this is X, the input matrix we will feed into the model.
         self.all_bert_input_ids: torch.Tensor = pad_sequence(
-            [torch.tensor(e) for e in bert_input_ids_unpadded],
-            batch_first=True
+            [torch.tensor(e) for e in bert_input_ids_unpadded], batch_first=True
         )
-        self.bert_attention_masks = torch.min(self.all_bert_input_ids, torch.tensor(1)).detach()
+        self.bert_attention_masks = torch.min(
+            self.all_bert_input_ids, torch.tensor(1)
+        ).detach()
 
         # TODO: rename this somehow
         # Offset by one for [CLS] and [SEQ]
-        self.selected_ids_start_end = torch.tensor([
-            (start_idx + 1, end_idx + 1)
-            for start_idx, end_idx in selected_ids_start_end_idx_raw
-        ])
+        self.selected_ids_start_end = torch.tensor(
+            [
+                (start_idx + 1, end_idx + 1)
+                for start_idx, end_idx in selected_ids_start_end_idx_raw
+            ]
+        )
 
         # Append torch.tensor([0]) to start because input_tokens include [CLS] token as the first one
         # and [SEQ] as last one.
         self.selected_ids = pad_sequence(
-            [torch.tensor([0] + label + [0]) for label in labels],
-            batch_first=True
+            [torch.tensor([0] + label + [0]) for label in labels], batch_first=True
         ).float()  # Float for BCELoss
-        self.sentiment_labels = torch.tensor(df_filtered['sentiment'].apply(self.SENTIMENT_MAP.get))
+        self.sentiment_labels = torch.tensor(
+            df_filtered["sentiment"].apply(self.SENTIMENT_MAP.get)
+        )
 
     def __len__(self):
         return len(self.all_bert_input_ids)
@@ -163,18 +174,243 @@ class TweetDataset(data.Dataset):
             self.bert_attention_masks[idx],
             self.selected_ids_start_end[idx],
             self.selected_ids[idx],
-            self.sentiment_labels[idx]
+            self.sentiment_labels[idx],
         )
+
+
+# TODO: test this and stuff
+def ls_find_start_end(b, threshold=0.6):
+    a = b - threshold
+    max_so_far = a[0]
+    cur_max = a[0]
+    start_idx = 0
+    max_start_idx, max_end_idx = 0, 0
+    for i in range(1, len(a)):
+        # cur_max = max(a[i], )
+        # cur_max = a[i] + max(0, cur_max)
+        if a[i] > cur_max + a[i]:
+            cur_max = a[i]
+            start_idx = i
+        else:
+            cur_max = cur_max + a[i]
+
+        # max_so_far = max(max_so_far, cur_max)
+        if max_so_far < cur_max:
+            max_so_far = cur_max
+            max_start_idx = start_idx
+            max_end_idx = i + 1
+
+    return max_start_idx, max_end_idx, max_so_far
+
+
+def differentiable_log_jaccard(logits, actual):
+    A = torch.sigmoid(logits)
+    B = actual
+    C = A * B
+    sum_c = torch.sum(C, axis=1)
+    # Numerically stable log.
+    return -torch.mean(
+        torch.log(sum_c)
+        - torch.log(torch.sum(A, axis=1) + torch.sum(B, axis=1) - sum_c)
+    )
+
+
+# Calculating jaccard from start_end indices
+def jaccard_from_start_end(s1, e1, s2, e2):
+    A_ = e1 - s1
+    B_ = int(e2 - s2)
+    C_ = int(max(min(e1, e2) - max(s1, s2), 0))
+    return C_ / (A_ + B_ - C_)
+
+
+def jaccard(str1, str2, debug=False):
+    a = set(str1.lower().split())
+    b = set(str2.lower().split())
+    c = a.intersection(b)
+    if debug:
+        print(a)
+        print(b)
+        print(c)
+    return float(len(c)) / (len(a) + len(b) - len(c))
+
+
+class NetworkV3(nn.Module):
+    """
+    This network uses the last two hidden layers of the BERT transformer
+    to develop predictions.
+    """
+
+    def __init__(self, bert_model_type, selected_id_loss_fn=nn.BCEWithLogitsLoss()):
+        super().__init__()
+        config = transformers.BertConfig.from_pretrained(bert_model_type)
+        config.output_hidden_states = True
+        self.bert = transformers.BertModel.from_pretrained(
+            bert_model_type, config=config
+        )
+
+        # Freeze weights
+        for param in self.bert.parameters():
+            param.requires_grad = False
+
+        self.selected_id_loss_fn = selected_id_loss_fn
+        self.d1 = nn.Dropout(0.1)
+
+        self.linear_layers = nn.ModuleList(
+            [
+                nn.Linear(config.hidden_size * 2, 1),
+                nn.Linear(config.hidden_size * 2, 1),
+                nn.Linear(config.hidden_size * 2, 1),
+            ]
+        )
+
+    def forward(self, input_ids, attention_mask, selected_ids, sentiment_labels):
+        batch_size = input_ids.shape[0]
+
+        last_hidden_state, _, all_hidden_states = self.bert(input_ids, attention_mask)
+        all_hidden_states = torch.cat(
+            (all_hidden_states[-1], all_hidden_states[-2]), dim=-1
+        )
+
+        all_hidden_states = self.d1(all_hidden_states)
+        logits = torch.stack(
+            [l(all_hidden_states) for l in self.linear_layers], axis=1
+        ).view(batch_size, 3, -1)
+
+        # Probably some gather magic to be done here.
+        selected_logits = torch.stack(
+            [logits[i][lbl] for i, lbl in enumerate(sentiment_labels)], axis=0
+        )
+
+        loss_fn = self.selected_id_loss_fn
+        loss = loss_fn(selected_logits.view(batch_size, -1), selected_ids)
+        return selected_logits, loss
+
+
+class ModelPipeline:
+    def __init__(self, dev, bert_tokenizer, model, learning_rate, train_generator):
+        self.bert_tokenizer = bert_tokenizer
+        self.dev = dev
+        self.model = model
+        # TODO: allow optimizer to be specified?
+        self.optim = Adam(model.parameters(), lr=learning_rate)
+        self.train_generator = train_generator
+
+    def fit(self, n_epochs):
+        # TODO: tqdm
+        epoch_bar = range(n_epochs)
+        losses = []
+        for epoch in epoch_bar:
+            for (
+                df_idx,
+                input_tokens,
+                attention_mask,
+                _,
+                selected_ids,
+                sentiment_labels,
+            ) in self.train_generator:
+                logits, loss = self.model(
+                    input_tokens.to(self.dev),
+                    attention_mask.to(self.dev),
+                    selected_ids.to(self.dev),
+                    sentiment_labels.to(self.dev),
+                )
+                losses.append(loss.item())
+                self.optim.zero_grad()
+                loss.backward()
+                self.optim.step()
+            # TODO: remove
+            print(f"Epoch {epoch}")
+        return losses
+
+    def pred(self, train_df_filtered, train_generator, threshold):
+        # TODO:!! remove train_df_filtered. shouldnt be mingling train and test
+        # TODO: should not be using train generator here explicitly
+        # TODO: docstring for threshold
+        train_df_map = {
+            i: data
+            for i, data in list(
+                train_df_filtered.apply(
+                    lambda row: (
+                        row.name,
+                        (
+                            row.text,
+                            row.selected_text,
+                            TokenizedString(
+                                self.bert_tokenizer,
+                                full_text=row.text,
+                                selected_text=row.selected_text,
+                            ),
+                        ),
+                    ),
+                    axis=1,
+                )
+            )
+        }
+        all_model_jaccard_scores = []
+        all_benchmark_jaccard_scores = []
+        for (
+            df_idx,
+            input_tokens,
+            attention_mask,
+            start_end,
+            selected_ids,
+            sentiment_labels,
+        ) in train_generator:
+            with torch.no_grad():
+                logits, _ = self.model(
+                    input_tokens.to(self.dev),
+                    attention_mask.to(self.dev),
+                    selected_ids.to(self.dev),
+                    sentiment_labels.to(self.dev),
+                )
+            prediction_vector = torch.sigmoid(logits)
+            pred_start_end = [
+                ls_find_start_end(pvec, threshold) for pvec in prediction_vector
+            ]
+            for i, (s1, e1, _), (s2, e2) in zip(df_idx, pred_start_end, start_end):
+                # TODO: this is new!! is it working??
+                original_text, selected_text, tokenized_string = train_df_map[int(i)]
+                # TODO: WHAT is going on with these indexes???
+                s1 = max(s1, 1)
+                e1 = min(e1, len(tokenized_string.bert_tokens) + 1)
+                all_model_jaccard_scores.append(
+                    (i, jaccard_from_start_end(s1, e1, s2, e2))
+                )
+                # TODO: are these off-by-ones right??
+                predicted_selected_text = tokenized_string.make_orig_substring_from_bert_idxes(
+                    s1 - 1, e1 - 1
+                )
+                all_benchmark_jaccard_scores.append(
+                    (i, jaccard(selected_text, predicted_selected_text))
+                )
+        return all_model_jaccard_scores, all_benchmark_jaccard_scores
 
 
 if __name__ == "__main__":
     original_string = "I love the recursecenter its so #coolCantBelieve"
-    BERT_MODEL_TYPE = 'bert-base-cased'
+    BERT_MODEL_TYPE = "bert-base-cased"
     bert_tokenizer_ = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
-    df_ = pd.DataFrame({
-        'text': ['hello worldd', 'hi moon'],
-        'selected_text': ['worldd', 'hi moon'],
-        'sentiment': ['neutral', 'positive']
-    })
-    dataset = TweetDataset(df_, bert_tokenizer_)
-    assert len(list(dataset)) == 2
+    df_ = pd.DataFrame(
+        {
+            "text": ["hello worldd", "hi moon"],
+            "selected_text": ["worldd", "hi moon"],
+            "sentiment": ["neutral", "positive"],
+        }
+    )
+    train_dataset = TweetDataset(df_, bert_tokenizer_)
+    train_generator = data.DataLoader(train_dataset, batch_size=1, shuffle=False)
+
+    dev = "cpu"
+    lr = 0.001
+    threshold = 0.6
+    pipeline = ModelPipeline(
+        dev=dev,
+        bert_tokenizer=bert_tokenizer_,
+        model=NetworkV3(BERT_MODEL_TYPE, differentiable_log_jaccard).to(dev),
+        learning_rate=lr,
+        train_generator=train_generator,
+    )
+    pipeline.fit(1)
+    pipeline.pred(
+        train_df_filtered=df_, train_generator=train_generator, threshold=threshold
+    )

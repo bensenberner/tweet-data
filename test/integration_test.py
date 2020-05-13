@@ -1,27 +1,11 @@
-import re
-import unicodedata
-
-import pandas as pd
 import transformers
 
 from kaggle_data_loader import TweetDataset as NewTweetDataset
 from old_loader import TweetDataset as OldTweetDataset
-from test import DatasetTestCase
+from test.test import DatasetTestCase
+from utils import load_small_df
 
 BERT_MODEL_TYPE = 'bert-base-cased'
-
-
-def load_small_df():
-    _RE_COMBINE_WHITESPACE = re.compile(r"\s+")
-
-    def clean(string):
-        unicode_string = unicodedata.normalize('NFKD', string).replace('\xa0', ' ')
-        return _RE_COMBINE_WHITESPACE.sub(' ', unicode_string).strip()
-
-    train_df = pd.read_csv('train_small.csv')
-    train_df['text'] = train_df['text'].astype(str).apply(clean)
-    train_df['selected_text'] = train_df['selected_text'].astype(str).apply(clean)
-    return train_df
 
 
 class TestCompareOldDatasetToNewDataset(DatasetTestCase):
