@@ -14,21 +14,24 @@ Pandas = namedtuple('Pandas', ['Index', 'text', 'selected_text'])
 
 
 class DatasetTestCase(unittest.TestCase):
-    def assertDatasetItemEqual(self, expected_item: tuple, actual_item: tuple):
+    @staticmethod
+    def _are_dataset_items_equal(expected_item: tuple, actual_item: tuple):
         for expected_element, actual_element in zip(expected_item, actual_item):
             if isinstance(expected_element, Tensor):
-                self.assertTrue(torch.equal(expected_element, actual_element))
+                if not torch.equal(expected_element, actual_element):
+                    return False
             else:
-                self.assertEqual(expected_element, actual_element)
+                if not expected_element == actual_element:
+                    return False
+        return True
+
+    def assertDatasetItemEqual(self, expected_item: tuple, actual_item: tuple):
+        self.assertTrue(self._are_dataset_items_equal(expected_item, actual_item))
 
     def assertDatasetItemInList(self, expected_item: tuple, actual_list_of_items: List[tuple]):
-        # TODO: this is kinda jank lol
         for actual_item in actual_list_of_items:
-            try:
-                self.assertDatasetItemEqual(expected_item, actual_item)
+            if self._are_dataset_items_equal(expected_item, actual_item):
                 return
-            except (AssertionError, RuntimeError):
-                pass
         self.fail("Unable to find item in list")
 
 
@@ -52,9 +55,7 @@ class TestTweetDataset(DatasetTestCase):
         self.assertDatasetItemInList(expected_item_0, list(dataset))
 
 
-# TODO: take out the new
-class TestNewLabel(unittest.TestCase):
-    # TODO: rename this test when it becomes more OOP
+class TestLabelData(unittest.TestCase):
     def test(self):
         bert_tokenizer = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
         text = "hello worldd"
