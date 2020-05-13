@@ -59,28 +59,17 @@ class TokenizedStrings:
         return self.data[idx]
 
 
-class BertTokenLabels:
-    UNK = '[UNK]'
-
-    def __init__(self, bert_tokenizer):
-        self.bert_tokenizer = bert_tokenizer
-
-    def create_bert_based_labels(self, df: pd.DataFrame):
-        """
-        # (first element in idx is tuple, second is label)
-        # (list of idxes that have errors in them)
-        """
-        index_labels = []
-        error_indexes = []
-        # TODO: TODO: does this row_idx mess things up??
-        for row in df.itertuples():
-            try:
-                start_idx, end_idx, labels = self.create_bert_based_labels_for_row(row)
-                bert_input_ids = self.bert_tokenizer.encode(row.text)
-                index_labels.append((row.Index, bert_input_ids, start_idx, end_idx, labels))
-            except AssertionError as e:
-                error_indexes.append(row.Index)
-        return (index_labels, error_indexes)
+# TODO: take out new
+class NEWBertTokenLabel:
+    def __init__(self, bert_tokenizer, row):
+        split_text = bert_tokenizer.tokenize(row.text)
+        split_selected_text = bert_tokenizer.tokenize(row.selected_text)
+        self.start_idx, self.end_idx = self.find(split_text, split_selected_text)
+        if self.start_idx == -1:
+            # TODO: print to stderr instead of stdout
+            # TODO: get a count of how often this happens
+            raise AssertionError(f"Could not find '{row.selected_text}' in '{row.text}'")
+        self.label = [1 if self.start_idx <= idx < self.end_idx else 0 for idx in range(len(split_text))]
 
     @staticmethod
     def find(haystack: List[str], needle: List[str]) -> Tuple[int, int]:
@@ -106,23 +95,6 @@ class BertTokenLabels:
                         )
         return -1, -1
 
-    def create_bert_based_labels_for_row(self, row, is_debug=False):
-        split_text = self.bert_tokenizer.tokenize(row.text)
-        split_selected_text = self.bert_tokenizer.tokenize(row.selected_text)
-        start_idx, end_idx = self.find(split_text, split_selected_text)
-        if start_idx == -1:
-            # TODO: print to stderr instead of stdout
-            # TODO: get a count of how often this happens
-            raise AssertionError(f"Could not find '{row.selected_text}' in '{row.text}'")
-        if is_debug:
-            print(split_text)
-            print(split_selected_text)
-        return (
-            start_idx,
-            end_idx,
-            [1 if start_idx <= idx < end_idx else 0 for idx in range(len(split_text))]
-        )
-
 
 class TweetDataset(data.Dataset):
     SENTIMENT_MAP = {
@@ -131,6 +103,7 @@ class TweetDataset(data.Dataset):
         'neutral': 2
     }
 
+    """
     # TODO: change to direct ben_tokenizer
     def __init__(self, df, bert_tokenizer):
         ben_tokenizer = BertTokenLabels(bert_tokenizer)
@@ -160,6 +133,49 @@ class TweetDataset(data.Dataset):
         self.selected_ids_start_end = torch.tensor(
             [(start_idx + 1, end_idx + 1) for idx, bert_input_ids, start_idx, end_idx, label in indexed_labels])
 
+        self.sentiment_labels = torch.tensor([self.SENTIMENT_MAP[x] for x in df_filtered['sentiment']])
+    """
+
+    def __init__(self, df, bert_tokenizer):
+        # TODO: simply use init instead of another thing
+        # bert_token_labels = BertTokenLabels(bert_tokenizer)
+        selected_ids_start_end_idx_raw = []
+        labels = []
+        bert_input_ids_unpadded = []
+        self.indexes = []
+        self.error_indexes = []
+        # TODO: TODO: does this row_idx mess things up??
+        for row in df.itertuples():
+            try:
+                # TODO: create new name for this
+                new_label = NEWBertTokenLabel(bert_tokenizer, row)
+                # start_idx, end_idx, label = bert_token_labels.create_label_list_for_row(row)
+                self.indexes.append(row.Index)
+                # TODO (speedup): you are already tokenizing in create_label_list. tokenize outside and pass it in
+                bert_input_ids = bert_tokenizer.encode(row.text)
+                bert_input_ids_unpadded.append(bert_input_ids)
+                # Offset by one for [CLS] and [SEQ]
+                selected_ids_start_end_idx_raw.append((new_label.start_idx + 1, new_label.end_idx + 1))
+                labels.append(new_label.label)
+            except AssertionError:
+                # TODO: is this the same index as it was before??
+                self.error_indexes.append(row.Index)
+        df_filtered = df.drop(self.error_indexes)
+        self.bert_input_tokens = pad_sequence(
+            [torch.tensor(e) for e in bert_input_ids_unpadded],
+            batch_first=True
+        )
+        # TODO: rename to masks
+        self.bert_attention_mask = torch.min(self.bert_input_tokens, torch.tensor(1)).detach()
+        # TODO: rename this somehow
+        self.selected_ids_start_end = torch.tensor(selected_ids_start_end_idx_raw)
+        # Append torch.tensor([0]) to start because input_tokens include [CLS] token as the first one
+        # and [SEQ] as last one.
+        self.selected_ids = pad_sequence(
+            [torch.tensor([0] + label + [0]) for label in labels],
+            batch_first=True
+        ).float()  # Float for BCELoss
+        # TODO: use pd.apply or something
         self.sentiment_labels = torch.tensor([self.SENTIMENT_MAP[x] for x in df_filtered['sentiment']])
 
     def __len__(self):
