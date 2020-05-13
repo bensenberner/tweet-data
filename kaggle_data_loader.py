@@ -60,23 +60,31 @@ class TokenizedStrings:
 
 
 # TODO: take out new
-class NEWBertTokenLabel:
+class LabelData:
     def __init__(self, bert_tokenizer, row):
+        """
+        self.start_idx: the index within the bert-tokenized row.text in which the row.selected_text first appears
+        self.end_idx: the index within the bert-tokenized row.text in which the row.selected_text last appears
+            NOTE that these this range defined by these indexes might be a little too wide in order to make sure the full
+            selected text was captured.
+        """
         split_text = bert_tokenizer.tokenize(row.text)
         split_selected_text = bert_tokenizer.tokenize(row.selected_text)
         self.start_idx, self.end_idx = self.find(split_text, split_selected_text)
         if self.start_idx == -1:
-            # TODO: print to stderr instead of stdout
             # TODO: get a count of how often this happens
             raise AssertionError(f"Could not find '{row.selected_text}' in '{row.text}'")
         self.label = [1 if self.start_idx <= idx < self.end_idx else 0 for idx in range(len(split_text))]
 
     @staticmethod
     def find(haystack: List[str], needle: List[str]) -> Tuple[int, int]:
-        # returns the index in haystack that forms the beginning of the substring that matches needle.
-        # returns -1 if needle is not in haystack.
-
-        # TODO: collapse these loops
+        """
+        :param haystack: list in which `needle` is being looked for
+        :param needle: we are trying to find the indexes in which `needle` is located in `haystack`
+        :return: the start and end indexes that define where `needle` is located in `haystack`.
+            If `needle` is not in `haystack` then we return (-1, -1)
+        TODO: explain how we handle needles that are almost in haystack except they're truncated at the ends
+        """
         for start_offset in [0, 1]:
             for end_offset in [0, -1]:
                 truncated_needle = needle[0 + start_offset: len(needle) + end_offset]
@@ -104,27 +112,24 @@ class TweetDataset(data.Dataset):
     }
 
     def __init__(self, df, bert_tokenizer):
-        # TODO: simply use init instead of another thing
-        # bert_token_labels = BertTokenLabels(bert_tokenizer)
         selected_ids_start_end_idx_raw = []
         # each label is a list of 1s and 0s, representing whether the corresponding bert token
         # was contained in the selected text or not
         labels: List[List[int]] = []
         bert_input_ids_unpadded = []
-        self.indexes = []
+        self.indexes = []  # the index of the row from the original df
         self.error_indexes = []
         # TODO: TODO: does this row_idx mess things up??
         for row in df.itertuples():
             try:
-                # TODO: create new name for this
-                new_label = NEWBertTokenLabel(bert_tokenizer, row)
-                # start_idx, end_idx, label = bert_token_labels.create_label_list_for_row(row)
-                self.indexes.append(row.Index)
-                # TODO (speedup): you are already tokenizing in create_label_list. tokenize outside and pass it in
+                # TODO (speedup): you are already tokenizing in LabelData.__init__. tokenize outside and pass it in
                 bert_input_ids = bert_tokenizer.encode(row.text)
+                label_data = LabelData(bert_tokenizer, row)
+
+                self.indexes.append(row.Index)
                 bert_input_ids_unpadded.append(bert_input_ids)
-                selected_ids_start_end_idx_raw.append((new_label.start_idx, new_label.end_idx))
-                labels.append(new_label.label)
+                selected_ids_start_end_idx_raw.append((label_data.start_idx, label_data.end_idx))
+                labels.append(label_data.label)
             except AssertionError:
                 # TODO: is this the same index as it was before??
                 # TODO: maybe do some sort of checking to indicate the error source
@@ -137,8 +142,8 @@ class TweetDataset(data.Dataset):
         )
         # TODO: rename to masks
         self.bert_attention_mask = torch.min(self.bert_input_tokens, torch.tensor(1)).detach()
-        # TODO: rename this somehow
 
+        # TODO: rename this somehow
         # Offset by one for [CLS] and [SEQ]
         self.selected_ids_start_end = torch.tensor([
             (start_idx + 1, end_idx + 1)
@@ -169,15 +174,13 @@ class TweetDataset(data.Dataset):
 
 
 if __name__ == "__main__":
-    # TODO: load in the actual original data, do the old way vs the new way, make sure no regression
-    # (could do a sample of like bottom 5 rows to make it easier to compare the diff. then do all rows)
     original_string = "I love the recursecenter its so #coolCantBelieve"
     BERT_MODEL_TYPE = 'bert-base-cased'
     bert_tokenizer_ = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
-    df = pd.DataFrame({
+    df_ = pd.DataFrame({
         'text': ['hello worldd', 'hi moon'],
         'selected_text': ['worldd', 'hi moon'],
         'sentiment': ['neutral', 'positive']
     })
-    dataset = TweetDataset(df, bert_tokenizer_)
-    print(list(dataset))
+    dataset = TweetDataset(df_, bert_tokenizer_)
+    assert len(list(dataset)) == 2

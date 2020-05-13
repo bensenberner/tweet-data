@@ -7,7 +7,7 @@ import torch
 import transformers
 from torch import tensor, Tensor
 
-from kaggle_data_loader import TweetDataset, NEWBertTokenLabel
+from kaggle_data_loader import TweetDataset, LabelData
 
 BERT_MODEL_TYPE = 'bert-base-cased'
 Pandas = namedtuple('Pandas', ['Index', 'text', 'selected_text'])
@@ -63,7 +63,7 @@ class TestNewLabel(unittest.TestCase):
         self.assertEqual(["hello", "world", "##d"], bert_tokenizer.tokenize(text))
 
         # TODO: fix this end_idx thing being not an actual idx
-        label = NEWBertTokenLabel(bert_tokenizer, row)
+        label = LabelData(bert_tokenizer, row)
 
         self.assertEqual(1, label.start_idx)
         self.assertEqual(3, label.end_idx)  # exclusive end_idx
