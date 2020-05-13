@@ -8,6 +8,8 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.optim import Adam
 from torch.utils import data
 
+from utils import RANDOM_SEED
+
 
 class TokenizedString:
     def __init__(self, bert_tokenizer, full_text, selected_text):
@@ -29,6 +31,9 @@ class TokenizedString:
             for sub_token in sub_tokens:
                 self.bert_to_spaced_orig_idx.append(spaced_orig_idx)
                 self.bert_tokens.append(sub_token)
+
+    def __repr__(self):
+        return str(self.bert_tokens)
 
     def make_orig_substring_from_bert_idxes(
         self, bert_start_idx: int, bert_end_idx: int
@@ -326,25 +331,15 @@ class ModelPipeline:
         # TODO:!! remove train_df_filtered. shouldnt be mingling train and test
         # TODO: should not be using train generator here explicitly
         # TODO: docstring for threshold
-        train_df_map = {
-            i: data
-            for i, data in list(
-                train_df_filtered.apply(
-                    lambda row: (
-                        row.name,
-                        (
-                            row.text,
-                            row.selected_text,
-                            TokenizedString(
-                                self.bert_tokenizer,
-                                full_text=row.text,
-                                selected_text=row.selected_text,
-                            ),
-                        ),
-                    ),
-                    axis=1,
-                )
+
+        # TODO: figure out how to create an indexed series!
+        idx_to_tokenized_str = {
+            row.Index: TokenizedString(
+                self.bert_tokenizer,
+                full_text=row.text,
+                selected_text=row.selected_text,
             )
+            for row in train_df_filtered.itertuples()
         }
         all_model_jaccard_scores = []
         all_benchmark_jaccard_scores = []
@@ -368,8 +363,9 @@ class ModelPipeline:
                 ls_find_start_end(pvec, threshold) for pvec in prediction_vector
             ]
             for i, (s1, e1, _), (s2, e2) in zip(df_idx, pred_start_end, start_end):
-                # TODO: this is new!! is it working??
-                original_text, selected_text, tokenized_string = train_df_map[int(i)]
+                # TODO: using tokenized_string is new!! is it working??
+                # TODO: what's with the int stuff
+                tokenized_string = idx_to_tokenized_str[int(i)]
                 # TODO: WHAT is going on with these indexes???
                 s1 = max(s1, 1)
                 e1 = min(e1, len(tokenized_string.bert_tokens) + 1)
@@ -380,13 +376,16 @@ class ModelPipeline:
                 predicted_selected_text = tokenized_string.make_orig_substring_from_bert_idxes(
                     s1 - 1, e1 - 1
                 )
+                actual_selected_text = train_df_filtered["selected_text"].iloc[int(i)]
                 all_benchmark_jaccard_scores.append(
-                    (i, jaccard(selected_text, predicted_selected_text))
+                    (i, jaccard(actual_selected_text, predicted_selected_text))
                 )
         return all_model_jaccard_scores, all_benchmark_jaccard_scores
 
 
 if __name__ == "__main__":
+    # TODO: I'm sometimes getting index out of bound errors?? uh oh!!1 (maybe should change the random seed around to repro)
+    torch.manual_seed(RANDOM_SEED)
     original_string = "I love the recursecenter its so #coolCantBelieve"
     BERT_MODEL_TYPE = "bert-base-cased"
     bert_tokenizer_ = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
