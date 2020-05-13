@@ -59,7 +59,6 @@ class TokenizedStrings:
         return self.data[idx]
 
 
-# TODO: take out new
 class LabelData:
     def __init__(self, bert_tokenizer, row):
         """
