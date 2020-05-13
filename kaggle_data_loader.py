@@ -135,6 +135,9 @@ class TweetDataset(data.Dataset):
     def __init__(self, df, bert_tokenizer):
         ben_tokenizer = BertTokenLabels(bert_tokenizer)
         # indexed labels is a list of [(enumerate_row_idx, bert_input_ids, start_idx, end_idx, labels)]
+        # TODO: just iterate over all the rows, create the labels one row at a time, then you'll
+        # have access to the "idx" and the bert_input_ids. in other words, move "create bert based labels" up to this fn
+        # since most of the code here is just getting values back out from there
         indexed_labels, error_indexes = ben_tokenizer.create_bert_based_labels(df)
         df_filtered = df.drop(error_indexes)
 
