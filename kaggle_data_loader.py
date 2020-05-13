@@ -177,7 +177,8 @@ class TweetDataset(data.Dataset):
 
 
 if __name__ == "__main__":
-    # TODO: create a simple dataframe!!
+    # TODO: load in the actual original data, do the old way vs the new way, make sure no regression
+    # (could do a sample of like bottom 5 rows to make it easier to compare the diff. then do all rows)
     original_string = "I love the recursecenter its so #coolCantBelieve"
     BERT_MODEL_TYPE = 'bert-base-cased'
     bert_tokenizer_ = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
