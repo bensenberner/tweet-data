@@ -7,8 +7,20 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import Adam
 from torch.utils import data
+from tqdm.notebook import tqdm
 
 from utils import RANDOM_SEED
+
+
+def in_notebook():
+    try:
+        from IPython import get_ipython
+
+        if "IPKernelApp" not in get_ipython().config:  # pragma: no cover
+            return False
+    except ImportError:
+        return False
+    return True
 
 
 class TokenizedString:
@@ -35,9 +47,7 @@ class TokenizedString:
     def __repr__(self):
         return str(self.bert_tokens)
 
-    def make_orig_substring_from_bert_idxes(
-        self, bert_start_idx: int, bert_end_idx: int
-    ) -> str:
+    def make_orig_substring_from_bert_idxes(self, bert_start_idx: int, bert_end_idx: int) -> str:
         """
         Given a start and end index from the bert token list, this will create
         a substring from the original string composed of the bert tokens within
@@ -55,9 +65,7 @@ class TokenizedStrings:
     def __init__(self, bert_tokenizer, train_df: pd.DataFrame):
         self.data = {
             row_idx: TokenizedString(
-                bert_tokenizer=bert_tokenizer,
-                full_text=row.text,
-                selected_text=row.selected_text,
+                bert_tokenizer=bert_tokenizer, full_text=row.text, selected_text=row.selected_text,
             )
             for row_idx, row in train_df.iterrows()
         }
@@ -78,13 +86,10 @@ class LabelData:
         split_selected_text = bert_tokenizer.tokenize(row.selected_text)
         self.start_idx, self.end_idx = self.find(split_text, split_selected_text)
         if self.start_idx == -1:
-            # TODO: get a count of how often this happens
-            raise AssertionError(
-                f"Could not find '{row.selected_text}' in '{row.text}'"
-            )
+            # TODO: get a count of how often this happens (in exploratory notebook)
+            raise AssertionError(f"Could not find '{row.selected_text}' in '{row.text}'")
         self.label = [
-            1 if self.start_idx <= idx < self.end_idx else 0
-            for idx in range(len(split_text))
+            1 if self.start_idx <= idx < self.end_idx else 0 for idx in range(len(split_text))
         ]
 
     @staticmethod
@@ -105,9 +110,7 @@ class LabelData:
                     # TODO: can I handle empty strings??
                     if (
                         haystack[haystack_idx] == truncated_needle[0]
-                        and haystack[
-                            haystack_idx : haystack_idx + len(truncated_needle)
-                        ]
+                        and haystack[haystack_idx : haystack_idx + len(truncated_needle)]
                     ):
                         # always returning a range of len(needle)
                         return (
@@ -128,6 +131,7 @@ class TweetDataset(data.Dataset):
         bert_input_ids_unpadded = []
         self.indexes = []  # the index of the row from the original df
         self.error_indexes = []
+        self.tokenized_strings = {}
         # TODO: TODO: does this row_idx mess things up??
         for row in df.itertuples():
             try:
@@ -135,9 +139,13 @@ class TweetDataset(data.Dataset):
                 self.indexes.append(row.Index)
                 bert_input_ids_unpadded.append(bert_tokenizer.encode(row.text))
                 selected_ids_start_end_idx_raw.append(
+                    # TODO: make sure that end_idx is always exclusive
                     (label_data.start_idx, label_data.end_idx)
                 )
                 labels.append(label_data.label)
+                self.tokenized_strings[row.Index] = TokenizedString(
+                    bert_tokenizer, row.text, row.selected_text
+                )
             except AssertionError:
                 # TODO: is this the same index as it was before??
                 # TODO: maybe do some sort of checking to indicate the error source
@@ -147,17 +155,12 @@ class TweetDataset(data.Dataset):
         self.all_bert_input_ids: torch.Tensor = pad_sequence(
             [torch.tensor(e) for e in bert_input_ids_unpadded], batch_first=True
         )
-        self.bert_attention_masks = torch.min(
-            self.all_bert_input_ids, torch.tensor(1)
-        ).detach()
+        self.bert_attention_masks = torch.min(self.all_bert_input_ids, torch.tensor(1)).detach()
 
         # TODO: rename this somehow
-        # Offset by one for [CLS] and [SEQ]
+        # Offset by one for [CLS]
         self.selected_ids_start_end = torch.tensor(
-            [
-                (start_idx + 1, end_idx + 1)
-                for start_idx, end_idx in selected_ids_start_end_idx_raw
-            ]
+            [(start_idx + 1, end_idx + 1) for start_idx, end_idx in selected_ids_start_end_idx_raw]
         )
 
         # Append torch.tensor([0]) to start because input_tokens include [CLS] token as the first one
@@ -165,9 +168,7 @@ class TweetDataset(data.Dataset):
         self.selected_ids = pad_sequence(
             [torch.tensor([0] + label + [0]) for label in labels], batch_first=True
         ).float()  # Float for BCELoss
-        self.sentiment_labels = torch.tensor(
-            df_filtered["sentiment"].apply(self.SENTIMENT_MAP.get)
-        )
+        self.sentiment_labels = torch.tensor(df_filtered["sentiment"].apply(self.SENTIMENT_MAP.get))
 
     def __len__(self):
         return len(self.all_bert_input_ids)
@@ -185,6 +186,7 @@ class TweetDataset(data.Dataset):
 
 # TODO: test this and stuff
 def ls_find_start_end(b, threshold=0.6):
+    # TODO: TODO: prevent padding from being a possible idx
     a = b - threshold
     max_so_far = a[0]
     cur_max = a[0]
@@ -215,8 +217,7 @@ def differentiable_log_jaccard(logits, actual):
     sum_c = torch.sum(C, axis=1)
     # Numerically stable log.
     return -torch.mean(
-        torch.log(sum_c)
-        - torch.log(torch.sum(A, axis=1) + torch.sum(B, axis=1) - sum_c)
+        torch.log(sum_c) - torch.log(torch.sum(A, axis=1) + torch.sum(B, axis=1) - sum_c)
     )
 
 
@@ -249,9 +250,7 @@ class NetworkV3(nn.Module):
         super().__init__()
         config = transformers.BertConfig.from_pretrained(bert_model_type)
         config.output_hidden_states = True
-        self.bert = transformers.BertModel.from_pretrained(
-            bert_model_type, config=config
-        )
+        self.bert = transformers.BertModel.from_pretrained(bert_model_type, config=config)
 
         # Freeze weights
         for param in self.bert.parameters():
@@ -268,18 +267,17 @@ class NetworkV3(nn.Module):
             ]
         )
 
+    # TODO: how are we going to do inference? stop short of calculating loss?
     def forward(self, input_ids, attention_mask, selected_ids, sentiment_labels):
         batch_size = input_ids.shape[0]
 
         last_hidden_state, _, all_hidden_states = self.bert(input_ids, attention_mask)
-        all_hidden_states = torch.cat(
-            (all_hidden_states[-1], all_hidden_states[-2]), dim=-1
-        )
+        all_hidden_states = torch.cat((all_hidden_states[-1], all_hidden_states[-2]), dim=-1)
 
         all_hidden_states = self.d1(all_hidden_states)
-        logits = torch.stack(
-            [l(all_hidden_states) for l in self.linear_layers], axis=1
-        ).view(batch_size, 3, -1)
+        logits = torch.stack([l(all_hidden_states) for l in self.linear_layers], axis=1).view(
+            batch_size, 3, -1
+        )
 
         # Probably some gather magic to be done here.
         selected_logits = torch.stack(
@@ -300,11 +298,9 @@ class ModelPipeline:
         self.optim = Adam(model.parameters(), lr=learning_rate)
         self.train_generator = train_generator
 
-    def fit(self, n_epochs):
-        # TODO: tqdm
-        epoch_bar = range(n_epochs)
+    def _fit_pycharm(self, n_epochs):
         losses = []
-        for epoch in epoch_bar:
+        for epoch in range(n_epochs):
             for (
                 df_idx,
                 input_tokens,
@@ -323,62 +319,82 @@ class ModelPipeline:
                 self.optim.zero_grad()
                 loss.backward()
                 self.optim.step()
-            # TODO: remove
             print(f"Epoch {epoch}")
         return losses
 
-    def pred(self, train_df_filtered, train_generator, threshold):
-        # TODO:!! remove train_df_filtered. shouldnt be mingling train and test
-        # TODO: should not be using train generator here explicitly
+    def _fit_notebook(self, n_epochs):
+        losses = []
+        epoch_bar = tqdm(range(n_epochs))
+        secondary_bar = tqdm(total=len(train_generator))
+        for _ in epoch_bar:
+            secondary_bar.reset()
+            for (
+                _,
+                input_tokens,
+                attention_mask,
+                _,
+                selected_ids,
+                sentiment_labels,
+            ) in train_generator:
+                logits, loss = self.model(
+                    input_tokens.to(dev),
+                    attention_mask.to(dev),
+                    selected_ids.to(dev),
+                    sentiment_labels.to(dev),
+                )
+                losses.append(loss.item())
+                self.optim.zero_grad()
+                loss.backward()
+                self.optim.step()
+                secondary_bar.update(1)
+        secondary_bar.close()
+        return losses
+
+    def fit(self, n_epochs):
+        return self._fit_notebook(n_epochs) if in_notebook() else self._fit_pycharm(n_epochs)
+
+    def pred(self, dataset: TweetDataset, threshold=0.6, batch_size=128):
         # TODO: docstring for threshold
 
-        # TODO: figure out how to create an indexed series!
-        idx_to_tokenized_str = {
-            row.Index: TokenizedString(
-                self.bert_tokenizer,
-                full_text=row.text,
-                selected_text=row.selected_text,
-            )
-            for row in train_df_filtered.itertuples()
-        }
         all_model_jaccard_scores = []
         all_benchmark_jaccard_scores = []
+        # TODO: set these in params
+        data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
         for (
-            df_idx,
+            df_idxes,
             input_tokens,
-            attention_mask,
-            start_end,
+            attention_masks,
+            actual_start_end,
             selected_ids,
             sentiment_labels,
-        ) in train_generator:
+        ) in data_loader:
             with torch.no_grad():
                 logits, _ = self.model(
                     input_tokens.to(self.dev),
-                    attention_mask.to(self.dev),
+                    attention_masks.to(self.dev),
                     selected_ids.to(self.dev),
                     sentiment_labels.to(self.dev),
                 )
             prediction_vector = torch.sigmoid(logits)
-            pred_start_end = [
-                ls_find_start_end(pvec, threshold) for pvec in prediction_vector
-            ]
-            for i, (s1, e1, _), (s2, e2) in zip(df_idx, pred_start_end, start_end):
+            pred_start_end = [ls_find_start_end(pvec, threshold) for pvec in prediction_vector]
+            for idx, (pred_start, pred_end, _), (actual_start, actual_end) in zip(
+                df_idxes, pred_start_end, actual_start_end
+            ):
                 # TODO: using tokenized_string is new!! is it working??
-                # TODO: what's with the int stuff
-                tokenized_string = idx_to_tokenized_str[int(i)]
-                # TODO: WHAT is going on with these indexes???
-                s1 = max(s1, 1)
-                e1 = min(e1, len(tokenized_string.bert_tokens) + 1)
+                tokenized_string = dataset.tokenized_strings[int(idx)]
+                # TODO: update ls_find_start_end so that we don't need to do this
+                pred_start = max(pred_start, 1)
+                pred_end = min(pred_end, len(tokenized_string.bert_tokens) + 1)
                 all_model_jaccard_scores.append(
-                    (i, jaccard_from_start_end(s1, e1, s2, e2))
+                    (idx, jaccard_from_start_end(pred_start, pred_end, actual_start, actual_end))
                 )
-                # TODO: are these off-by-ones right??
+                # TODO(change into a explanatory note about undoing the [CLS] shift
                 predicted_selected_text = tokenized_string.make_orig_substring_from_bert_idxes(
-                    s1 - 1, e1 - 1
+                    pred_start - 1, pred_end - 1
                 )
-                actual_selected_text = train_df_filtered["selected_text"].iloc[int(i)]
+                actual_selected_text = tokenized_string.selected_text
                 all_benchmark_jaccard_scores.append(
-                    (i, jaccard(actual_selected_text, predicted_selected_text))
+                    (idx, jaccard(actual_selected_text, predicted_selected_text))
                 )
         return all_model_jaccard_scores, all_benchmark_jaccard_scores
 
@@ -410,6 +426,4 @@ if __name__ == "__main__":
         train_generator=train_generator,
     )
     pipeline.fit(1)
-    pipeline.pred(
-        train_df_filtered=df_, train_generator=train_generator, threshold=threshold
-    )
+    pipeline.pred(dataset=train_dataset, threshold=threshold, batch_size=1)

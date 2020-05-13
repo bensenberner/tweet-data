@@ -1,3 +1,5 @@
 ## TODO:
-- need to figure out what "idx" means in TweetDataset.__getitem__. When we `enumerate` over all the rows and create simple ordinal indexes, are those DIFFERENT from the dataframe indexes?
+- update ls_find_start_end so that we don't need to weird min max index stuff inpred
+- Ben investigates where that index out of bound flaky thing came
 - can find() handle empty strings?
+    - write a few test cases for find
