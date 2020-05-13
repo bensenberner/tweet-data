@@ -121,12 +121,9 @@ class TweetDataset(data.Dataset):
         # TODO: TODO: does this row_idx mess things up??
         for row in df.itertuples():
             try:
-                # TODO (speedup): you are already tokenizing in LabelData.__init__. tokenize outside and pass it in
-                bert_input_ids = bert_tokenizer.encode(row.text)
                 label_data = LabelData(bert_tokenizer, row)
-
                 self.indexes.append(row.Index)
-                bert_input_ids_unpadded.append(bert_input_ids)
+                bert_input_ids_unpadded.append(bert_tokenizer.encode(row.text))
                 selected_ids_start_end_idx_raw.append((label_data.start_idx, label_data.end_idx))
                 labels.append(label_data.label)
             except AssertionError:

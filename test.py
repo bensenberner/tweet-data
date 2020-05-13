@@ -19,18 +19,21 @@ class DatasetTestCase(unittest.TestCase):
         for expected_element, actual_element in zip(expected_item, actual_item):
             if isinstance(expected_element, Tensor):
                 if not torch.equal(expected_element, actual_element):
-                    return False
+                    return False, expected_element, actual_element
             else:
                 if not expected_element == actual_element:
-                    return False
-        return True
+                    return False, expected_element, actual_element
+        return True, None, None
 
     def assertDatasetItemEqual(self, expected_item: tuple, actual_item: tuple):
-        self.assertTrue(self._are_dataset_items_equal(expected_item, actual_item))
+        are_equal, expected, actual = self._are_dataset_items_equal(expected_item, actual_item)
+        if not are_equal:
+            self.fail(f'Expected {expected}, actual {actual}')
 
     def assertDatasetItemInList(self, expected_item: tuple, actual_list_of_items: List[tuple]):
         for actual_item in actual_list_of_items:
-            if self._are_dataset_items_equal(expected_item, actual_item):
+            are_equal, _, _ = self._are_dataset_items_equal(expected_item, actual_item)
+            if are_equal:
                 return
         self.fail("Unable to find item in list")
 
@@ -56,6 +59,15 @@ class TestTweetDataset(DatasetTestCase):
 
 
 class TestLabelData(unittest.TestCase):
+    def test_wtf(self):
+        # this test is to prove that huggingface's docs are NOT consistent. these are supposed to be the same
+        bert_tokenizer = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
+        text = "hello worldd"
+        self.assertNotEqual(
+            bert_tokenizer.encode(text),
+            bert_tokenizer.convert_tokens_to_ids(bert_tokenizer.tokenize(text))
+        )
+
     def test(self):
         bert_tokenizer = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
         text = "hello worldd"
