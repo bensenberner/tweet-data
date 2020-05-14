@@ -1,5 +1,5 @@
 from collections import namedtuple
-from typing import List, Tuple, Iterable
+from typing import List, Tuple, Iterable, Optional, Callable
 
 import pandas as pd
 import torch
@@ -7,6 +7,7 @@ import transformers
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import Adam
+from torch.optim.optimizer import Optimizer
 from torch.utils import data
 from torch.utils.data import DataLoader
 from tqdm.notebook import tqdm
@@ -228,15 +229,11 @@ def ls_find_start_end(b, threshold):
     start_idx = 0
     max_start_idx, max_end_idx = 0, 0
     for i in range(1, len(a)):
-        # cur_max = max(a[i], )
-        # cur_max = a[i] + max(0, cur_max)
         if a[i] > cur_max + a[i]:
             cur_max = a[i]
             start_idx = i
         else:
             cur_max = cur_max + a[i]
-
-        # max_so_far = max(max_so_far, cur_max)
         if max_so_far < cur_max:
             max_so_far = cur_max
             max_start_idx = start_idx
@@ -245,7 +242,7 @@ def ls_find_start_end(b, threshold):
     return Prediction(start_idx=max_start_idx, end_idx=max_end_idx, max_logit_sum=max_so_far)
 
 
-def differentiable_log_jaccard(logits, actual):
+def differentiable_log_jaccard(logits: torch.Tensor, actual: torch.Tensor) -> torch.Tensor:
     A = torch.sigmoid(logits)
     B = actual
     C = A * B
@@ -322,27 +319,26 @@ class NetworkV3(nn.Module):
 class ModelPipeline:
     def __init__(
         self,
-        dev,
+        dev: str,
         bert_tokenizer,
         model: nn.Module,
-        learning_rate,
-        selected_id_loss_fn,
-        prediction_threshold=0.6,
+        selected_id_loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+        optim: Optional[Optimizer] = None,
+        learning_rate: float = 0.001,
+        prediction_threshold: float = 0.6,
     ):
         """
-        # TODO: explain!
-        :param dev:
-        :param bert_tokenizer:
-        :param model:
-        :param learning_rate:
-        :param selected_id_loss_fn:
-        :param prediction_threshold:
+        :param dev: where computations are to be run
+        :param bert_tokenizer: duh
+        :param model: just needs to implement forward()
+        :param selected_id_loss_fn: takes in predicted logits and actual labels (which are between 0 and 1) for multiple examples, and returns the loss for each example
+        :param learning_rate: learning rate for the optimizer
+        :param prediction_threshold: # TODO
         """
         self.bert_tokenizer = bert_tokenizer
         self.dev = dev
         self.model = model
-        # TODO: allow optimizer to be specified?
-        self.optim = Adam(model.parameters(), lr=learning_rate)
+        self.optim = Adam(model.parameters(), lr=learning_rate) if not optim else optim
         self.selected_id_loss_fn = selected_id_loss_fn
         self.prediction_threshold = prediction_threshold
 
@@ -382,61 +378,10 @@ class ModelPipeline:
             secondary_bar.close()
         return losses
 
-    # TODO: this should not be TrainTweetDataset
-    def old_pred(self, dataset: _TweetDataset, batch_size=128):
-        # TODO: docstring for threshold
-
-        all_model_jaccard_scores = []
-        all_benchmark_jaccard_scores = []
-        # TODO: set these in params
-        # TODO: do I even need data_loader in pred?
-        data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
-        for (
-            df_idxes,
-            input_ids,
-            masks,
-            sentiments,
-            actual_start_end,
-            selected_texts,
-            _,
-        ) in data_loader:
-            with torch.no_grad():
-                logits = self.model(
-                    input_ids.to(self.dev), masks.to(self.dev), sentiments.to(self.dev),
-                )
-            prediction_vectors = torch.sigmoid(logits)
-            pred_start_end = [
-                ls_find_start_end(pvec, self.prediction_threshold) for pvec in prediction_vectors
-            ]
-            for (
-                idx,
-                (pred_start, pred_end, _),
-                (actual_start, actual_end),
-                actual_selected_text,
-            ) in zip(df_idxes, pred_start_end, actual_start_end, selected_texts):
-                # TODO: using tokenized_string is new!! is it working??
-                tokenized_string = dataset.tokenized_strings[int(idx)]
-                # TODO: update ls_find_start_end so that we don't need to do this
-                pred_start = max(pred_start, 1)
-                pred_end = min(pred_end, len(tokenized_string.bert_tokens) + 1)
-                all_model_jaccard_scores.append(
-                    (idx, jaccard_from_start_end(pred_start, pred_end, actual_start, actual_end),)
-                )
-                # TODO(change into a explanatory note about undoing the [CLS] shift
-                predicted_selected_text = tokenized_string.make_orig_substring_from_bert_idxes(
-                    pred_start - 1, pred_end - 1
-                )
-                all_benchmark_jaccard_scores.append(
-                    (idx, jaccard(actual_selected_text, predicted_selected_text))
-                )
-        return all_model_jaccard_scores, all_benchmark_jaccard_scores
-
-    # TODO: change to TestTweetDataset (has no actual start or end idx)
     def pred_selected_text(self, dataset: _TweetDataset, batch_size=128):
         predicted_selected_texts = []
         # TODO: do I really need a dataloader for doing prediction?
         data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
-        # TODO: don't explicitly unpack so this can handle train and test
         for data_row in data_loader:
             with torch.no_grad():
                 logits = self.model(
@@ -453,22 +398,23 @@ class ModelPipeline:
                 tokenized_string = dataset.tokenized_strings[int(idx)]
                 pred_start_idx = max(pred.start_idx, 1)
                 pred_end_idx = min(pred.end_idx, len(tokenized_string.bert_tokens) + 1)
-                # TODO(change into a explanatory note about undoing the [CLS] shift
+                #  -1 offset since we're ignoring the [CLS] token at the beginning
                 predicted_selected_text = tokenized_string.make_orig_substring_from_bert_idxes(
-                    pred_start_idx - 1, pred_end_idx - 1
+                    pred_start_idx - 1, pred_end_idx - 1,
                 )
                 predicted_selected_texts.append(predicted_selected_text)
         return predicted_selected_texts
 
     def jaccard_scores(self, dataset, actual_selected_texts):
         predicted_selected_texts = self.pred_selected_text(dataset)
-        # TODO: create a dataframe out of this?? something instead of using raw tuples
-        return [
-            (idx, jaccard(predicted_selected_text, actual_selected_text))
-            for idx, (predicted_selected_text, actual_selected_text) in enumerate(
-                zip(predicted_selected_texts, actual_selected_texts)
-            )
-        ]
+        return pd.Series(
+            [
+                jaccard(pred_sel_text, actual_sel_text)
+                for pred_sel_text, actual_sel_text in zip(
+                    predicted_selected_texts, actual_selected_texts
+                )
+            ]
+        )
 
 
 def main():
@@ -488,13 +434,11 @@ def main():
     train_data_loader = data.DataLoader(train_dataset, batch_size=1, shuffle=False)
 
     dev = "cpu"
-    lr = 0.001
     threshold = 0.6
     pipeline = ModelPipeline(
         dev=dev,
         bert_tokenizer=bert_tokenizer_,
         model=NetworkV3(BERT_MODEL_TYPE).to(dev),
-        learning_rate=lr,
         selected_id_loss_fn=differentiable_log_jaccard,
         prediction_threshold=threshold,
     )
