@@ -269,11 +269,10 @@ class NetworkV3(nn.Module):
             ]
         )
 
-    # TODO: how are we going to do inference? stop short of calculating loss?
-    def forward(self, input_ids, attention_mask, sentiment_labels) -> torch.Tensor:
+    def forward(self, input_ids, masks, sentiment_labels) -> torch.Tensor:
         batch_size = input_ids.shape[0]
 
-        last_hidden_state, _, all_hidden_states = self.bert(input_ids, attention_mask)
+        last_hidden_state, _, all_hidden_states = self.bert(input_ids, masks)
         all_hidden_states = torch.cat((all_hidden_states[-1], all_hidden_states[-2]), dim=-1)
 
         all_hidden_states = self.d1(all_hidden_states)
@@ -282,11 +281,10 @@ class NetworkV3(nn.Module):
         )
 
         # Probably some gather magic to be done here.
-        selected_logits = torch.stack(
+        selected_id_logits = torch.stack(
             [logits[i][lbl] for i, lbl in enumerate(sentiment_labels)], axis=0
         )
-
-        return selected_logits
+        return selected_id_logits
 
 
 class ModelPipeline:
@@ -300,63 +298,39 @@ class ModelPipeline:
         self.optim = Adam(model.parameters(), lr=learning_rate)
         self.selected_id_loss_fn = selected_id_loss_fn
 
-    def _get_loss(self, input_ids, attention_mask, sentiment_labels, selected_ids):
+    def _get_loss(self, input_ids, masks, sentiment_labels, selected_ids) -> torch.Tensor:
         # TODO: docstring
         batch_size = input_ids.shape[0]
         selected_logits = self.model(
-            input_ids.to(self.dev), attention_mask.to(self.dev), sentiment_labels.to(self.dev),
+            input_ids.to(self.dev), masks.to(self.dev), sentiment_labels.to(self.dev),
         )
         loss_fn = self.selected_id_loss_fn
         return loss_fn(selected_logits.view(batch_size, -1), selected_ids)
 
-    def _fit_pycharm(self, train_generator: DataLoader, n_epochs):
-        losses = []
-        for epoch in range(n_epochs):
-            for (
-                _,
-                input_ids,
-                attention_mask,
-                _,
-                sentiment_labels,
-                selected_ids,
-            ) in train_generator:
-                loss = self._get_loss(input_ids, attention_mask, sentiment_labels, selected_ids)
-                losses.append(loss.item())
-                self.optim.zero_grad()
-                loss.backward()
-                self.optim.step()
-            print(f"Epoch {epoch}")
-        return losses
-
-    def _fit_notebook(self, train_data_loader: DataLoader, n_epochs):
-        losses = []
-        epoch_bar = tqdm(range(n_epochs))
-        secondary_bar = tqdm(total=len(train_data_loader))
-        for _ in epoch_bar:
-            secondary_bar.reset()
-            for (
-                _,
-                input_tokens,
-                attention_mask,
-                _,
-                sentiment_labels,
-                selected_ids,
-            ) in train_data_loader:
-                loss = self._get_loss(input_tokens, attention_mask, sentiment_labels, selected_ids)
-                losses.append(loss.item())
-                self.optim.zero_grad()
-                loss.backward()
-                self.optim.step()
-                secondary_bar.update(1)
-        secondary_bar.close()
-        return losses
+    def _update_weights(self, loss) -> None:
+        self.optim.zero_grad()
+        loss.backward()
+        self.optim.step()
 
     def fit(self, train_data_loader: DataLoader, n_epochs):
-        return (
-            self._fit_notebook(train_data_loader, n_epochs)
-            if in_notebook()
-            else self._fit_pycharm(train_data_loader, n_epochs)
-        )
+        is_in_notebook = in_notebook()
+        losses = []
+        epoch_bar = tqdm(range(n_epochs)) if is_in_notebook else range(n_epochs)
+        secondary_bar = tqdm(total=len(train_data_loader)) if is_in_notebook else None
+        for epoch in epoch_bar:
+            if is_in_notebook:
+                secondary_bar.reset()
+            for (_, input_ids, masks, _, sentiments, selected_ids,) in train_data_loader:
+                loss = self._get_loss(input_ids, masks, sentiments, selected_ids)
+                losses.append(loss.item())
+                self._update_weights(loss)
+                if is_in_notebook:
+                    secondary_bar.update(1)
+            if not is_in_notebook:
+                print(f"Epoch {epoch}")
+        if is_in_notebook:
+            secondary_bar.close()
+        return losses
 
     # TODO: this should not be TrainTweetDataset
     def pred(self, dataset: TrainTweetDataset, threshold=0.6, batch_size=128):
@@ -367,19 +341,10 @@ class ModelPipeline:
         # TODO: set these in params
         # TODO: do I even need data_loader in pred?
         data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
-        for (
-            df_idxes,
-            input_tokens,
-            attention_masks,
-            actual_start_end,
-            sentiment_labels,
-            _,
-        ) in data_loader:
+        for (df_idxes, input_ids, masks, actual_start_end, sentiment_labels, _,) in data_loader:
             with torch.no_grad():
                 logits = self.model(
-                    input_tokens.to(self.dev),
-                    attention_masks.to(self.dev),
-                    sentiment_labels.to(self.dev),
+                    input_ids.to(self.dev), masks.to(self.dev), sentiment_labels.to(self.dev),
                 )
             prediction_vector = torch.sigmoid(logits)
             pred_start_end = [ls_find_start_end(pvec, threshold) for pvec in prediction_vector]
