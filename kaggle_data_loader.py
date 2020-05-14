@@ -55,7 +55,7 @@ class TokenizedText:
         that start and end bert index range.
 
         :param bert_start_idx: start index from the bert token list
-        :param bert_end_idx: end index from the bert token list
+        :param bert_end_idx: end index from the bert token list. CURRENTLY exclusive TODO: fix this!
         """
         orig_start_idx = self.bert_to_spaced_orig_idx[bert_start_idx]
         orig_end_idx = self.bert_to_spaced_orig_idx[bert_end_idx - 1]
@@ -106,9 +106,6 @@ class LabelData:
                             haystack_idx - start_offset + len(needle),
                         )
         return -1, -1
-
-
-# namedtuple('TrainRow', ['#TODO: all the train row stuff including label'])
 
 
 TestData = namedtuple("TestData", ["idxes", "all_bert_input_ids", "masks", "sentiments"])
@@ -374,7 +371,7 @@ class ModelPipeline:
             if is_in_notebook:
                 secondary_bar.reset()
             # TODO: this is such a jank unpacking...
-            for (_, input_ids, masks, sentiments, _, _, selected_ids) in train_data_loader:
+            for (_, input_ids, masks, sentiments, _, _, selected_ids,) in train_data_loader:
                 loss = self._get_loss(input_ids, masks, sentiments, selected_ids)
                 losses.append(loss.item())
                 self._update_weights(loss)
@@ -424,7 +421,7 @@ class ModelPipeline:
                 pred_start = max(pred_start, 1)
                 pred_end = min(pred_end, len(tokenized_string.bert_tokens) + 1)
                 all_model_jaccard_scores.append(
-                    (idx, jaccard_from_start_end(pred_start, pred_end, actual_start, actual_end))
+                    (idx, jaccard_from_start_end(pred_start, pred_end, actual_start, actual_end),)
                 )
                 # TODO(change into a explanatory note about undoing the [CLS] shift
                 predicted_selected_text = tokenized_string.make_orig_substring_from_bert_idxes(
