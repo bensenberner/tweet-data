@@ -1,3 +1,4 @@
+from collections import namedtuple
 from typing import List, Tuple
 
 import pandas as pd
@@ -187,8 +188,11 @@ class TrainTweetDataset(data.Dataset):
         )
 
 
+Prediction = namedtuple("Prediction", ["start_idx", "end_idx", "max_logit_sum"])
+
+
 # TODO: test this and stuff
-def ls_find_start_end(b, threshold=0.6):
+def ls_find_start_end(b, threshold):
     # TODO: TODO: prevent padding from being a possible idx
     a = b - threshold
     max_so_far = a[0]
@@ -210,7 +214,7 @@ def ls_find_start_end(b, threshold=0.6):
             max_start_idx = start_idx
             max_end_idx = i + 1
 
-    return max_start_idx, max_end_idx, max_so_far
+    return Prediction(start_idx=max_start_idx, end_idx=max_end_idx, max_logit_sum=max_so_far)
 
 
 def differentiable_log_jaccard(logits, actual):
@@ -289,14 +293,30 @@ class NetworkV3(nn.Module):
 
 class ModelPipeline:
     def __init__(
-        self, dev, bert_tokenizer, model: nn.Module, learning_rate, selected_id_loss_fn,
+        self,
+        dev,
+        bert_tokenizer,
+        model: nn.Module,
+        learning_rate,
+        selected_id_loss_fn,
+        prediction_threshold=0.6,
     ):
+        """
+        # TODO: explain!
+        :param dev:
+        :param bert_tokenizer:
+        :param model:
+        :param learning_rate:
+        :param selected_id_loss_fn:
+        :param prediction_threshold:
+        """
         self.bert_tokenizer = bert_tokenizer
         self.dev = dev
         self.model = model
         # TODO: allow optimizer to be specified?
         self.optim = Adam(model.parameters(), lr=learning_rate)
         self.selected_id_loss_fn = selected_id_loss_fn
+        self.prediction_threshold = prediction_threshold
 
     def _get_loss(self, input_ids, masks, sentiment_labels, selected_ids) -> torch.Tensor:
         # TODO: docstring
@@ -333,7 +353,7 @@ class ModelPipeline:
         return losses
 
     # TODO: this should not be TrainTweetDataset
-    def pred(self, dataset: TrainTweetDataset, threshold=0.6, batch_size=128):
+    def old_pred(self, dataset: TrainTweetDataset, batch_size=128):
         # TODO: docstring for threshold
 
         all_model_jaccard_scores = []
@@ -346,8 +366,10 @@ class ModelPipeline:
                 logits = self.model(
                     input_ids.to(self.dev), masks.to(self.dev), sentiment_labels.to(self.dev),
                 )
-            prediction_vector = torch.sigmoid(logits)
-            pred_start_end = [ls_find_start_end(pvec, threshold) for pvec in prediction_vector]
+            prediction_vectors = torch.sigmoid(logits)
+            pred_start_end = [
+                ls_find_start_end(pvec, self.prediction_threshold) for pvec in prediction_vectors
+            ]
             for idx, (pred_start, pred_end, _), (actual_start, actual_end) in zip(
                 df_idxes, pred_start_end, actual_start_end
             ):
@@ -369,8 +391,33 @@ class ModelPipeline:
                 )
         return all_model_jaccard_scores, all_benchmark_jaccard_scores
 
+    # TODO: change to TestTweetDataset (has no actual start or end idx)
+    def pred_selected_text(self, dataset: TrainTweetDataset, batch_size=128):
+        predicted_selected_texts = []
+        data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        for idxes, input_ids, masks, actual_start_ends, sentiments, _ in data_loader:
+            with torch.no_grad():
+                logits = self.model(
+                    input_ids.to(self.dev), masks.to(self.dev), sentiments.to(self.dev),
+                )
+            prediction_vectors = torch.sigmoid(logits)
+            preds = [
+                ls_find_start_end(prediction_vector, self.prediction_threshold)
+                for prediction_vector in prediction_vectors
+            ]
+            for idx, pred in zip(idxes, preds):
+                tokenized_string = dataset.tokenized_strings[int(idx)]
+                pred_start_idx = max(pred.start_idx, 1)
+                pred_end_idx = min(pred.end_idx, len(tokenized_string.bert_tokens) + 1)
+                # TODO(change into a explanatory note about undoing the [CLS] shift
+                predicted_selected_text = tokenized_string.make_orig_substring_from_bert_idxes(
+                    pred_start_idx - 1, pred_end_idx - 1
+                )
+                predicted_selected_texts.append(predicted_selected_text)
+        return predicted_selected_texts
 
-if __name__ == "__main__":
+
+def main():
     # TODO: I'm sometimes getting index out of bound errors?? uh oh!!1 (maybe should change the random seed around to repro)
     # TODO: need to have an example of a row that would raise an assertionerror and be filtered out
     torch.manual_seed(RANDOM_SEED)
@@ -396,6 +443,11 @@ if __name__ == "__main__":
         model=NetworkV3(BERT_MODEL_TYPE).to(dev),
         learning_rate=lr,
         selected_id_loss_fn=differentiable_log_jaccard,
+        prediction_threshold=threshold,
     )
     pipeline.fit(train_data_loader, 1)
-    pipeline.pred(dataset=train_dataset, threshold=threshold, batch_size=1)
+    print(pipeline.pred_selected_text(train_dataset))
+
+
+if __name__ == "__main__":
+    main()
