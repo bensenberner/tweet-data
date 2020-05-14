@@ -249,7 +249,7 @@ class NetworkV3(nn.Module):
     to develop predictions.
     """
 
-    def __init__(self, bert_model_type, selected_id_loss_fn=nn.BCEWithLogitsLoss()):
+    def __init__(self, bert_model_type):
         super().__init__()
         config = transformers.BertConfig.from_pretrained(bert_model_type)
         config.output_hidden_states = True
@@ -259,7 +259,6 @@ class NetworkV3(nn.Module):
         for param in self.bert.parameters():
             param.requires_grad = False
 
-        self.selected_id_loss_fn = selected_id_loss_fn
         self.d1 = nn.Dropout(0.1)
 
         self.linear_layers = nn.ModuleList(
@@ -271,7 +270,7 @@ class NetworkV3(nn.Module):
         )
 
     # TODO: how are we going to do inference? stop short of calculating loss?
-    def forward(self, input_ids, attention_mask, selected_ids, sentiment_labels):
+    def forward(self, input_ids, attention_mask, sentiment_labels) -> torch.Tensor:
         batch_size = input_ids.shape[0]
 
         last_hidden_state, _, all_hidden_states = self.bert(input_ids, attention_mask)
@@ -287,36 +286,41 @@ class NetworkV3(nn.Module):
             [logits[i][lbl] for i, lbl in enumerate(sentiment_labels)], axis=0
         )
 
-        loss_fn = self.selected_id_loss_fn
-        loss = loss_fn(selected_logits.view(batch_size, -1), selected_ids)
-        return selected_logits, loss
+        return selected_logits
 
 
 class ModelPipeline:
-    def __init__(self, dev, bert_tokenizer, model, learning_rate):
+    def __init__(
+        self, dev, bert_tokenizer, model: nn.Module, learning_rate, selected_id_loss_fn,
+    ):
         self.bert_tokenizer = bert_tokenizer
         self.dev = dev
         self.model = model
         # TODO: allow optimizer to be specified?
         self.optim = Adam(model.parameters(), lr=learning_rate)
+        self.selected_id_loss_fn = selected_id_loss_fn
+
+    def _get_loss(self, input_ids, attention_mask, sentiment_labels, selected_ids):
+        # TODO: docstring
+        batch_size = input_ids.shape[0]
+        selected_logits = self.model(
+            input_ids.to(self.dev), attention_mask.to(self.dev), sentiment_labels.to(self.dev),
+        )
+        loss_fn = self.selected_id_loss_fn
+        return loss_fn(selected_logits.view(batch_size, -1), selected_ids)
 
     def _fit_pycharm(self, train_generator: DataLoader, n_epochs):
         losses = []
         for epoch in range(n_epochs):
             for (
-                df_idx,
-                input_tokens,
+                _,
+                input_ids,
                 attention_mask,
                 _,
                 sentiment_labels,
                 selected_ids,
             ) in train_generator:
-                logits, loss = self.model(
-                    input_tokens.to(self.dev),
-                    attention_mask.to(self.dev),
-                    selected_ids.to(self.dev),
-                    sentiment_labels.to(self.dev),
-                )
+                loss = self._get_loss(input_ids, attention_mask, sentiment_labels, selected_ids)
                 losses.append(loss.item())
                 self.optim.zero_grad()
                 loss.backward()
@@ -338,12 +342,7 @@ class ModelPipeline:
                 sentiment_labels,
                 selected_ids,
             ) in train_data_loader:
-                logits, loss = self.model(
-                    input_tokens.to(dev),
-                    attention_mask.to(dev),
-                    selected_ids.to(dev),
-                    sentiment_labels.to(dev),
-                )
+                loss = self._get_loss(input_tokens, attention_mask, sentiment_labels, selected_ids)
                 losses.append(loss.item())
                 self.optim.zero_grad()
                 loss.backward()
@@ -359,12 +358,14 @@ class ModelPipeline:
             else self._fit_pycharm(train_data_loader, n_epochs)
         )
 
+    # TODO: this should not be TrainTweetDataset
     def pred(self, dataset: TrainTweetDataset, threshold=0.6, batch_size=128):
         # TODO: docstring for threshold
 
         all_model_jaccard_scores = []
         all_benchmark_jaccard_scores = []
         # TODO: set these in params
+        # TODO: do I even need data_loader in pred?
         data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
         for (
             df_idxes,
@@ -372,13 +373,12 @@ class ModelPipeline:
             attention_masks,
             actual_start_end,
             sentiment_labels,
-            selected_ids,
+            _,
         ) in data_loader:
             with torch.no_grad():
-                logits, _ = self.model(
+                logits = self.model(
                     input_tokens.to(self.dev),
                     attention_masks.to(self.dev),
-                    selected_ids.to(self.dev),
                     sentiment_labels.to(self.dev),
                 )
             prediction_vector = torch.sigmoid(logits)
@@ -428,8 +428,9 @@ if __name__ == "__main__":
     pipeline = ModelPipeline(
         dev=dev,
         bert_tokenizer=bert_tokenizer_,
-        model=NetworkV3(BERT_MODEL_TYPE, differentiable_log_jaccard).to(dev),
+        model=NetworkV3(BERT_MODEL_TYPE).to(dev),
         learning_rate=lr,
+        selected_id_loss_fn=differentiable_log_jaccard,
     )
     pipeline.fit(train_data_loader, 1)
     pipeline.pred(dataset=train_dataset, threshold=threshold, batch_size=1)
