@@ -1,5 +1,5 @@
 from collections import namedtuple
-from typing import List, Tuple
+from typing import List, Tuple, Iterable
 
 import pandas as pd
 import torch
@@ -127,8 +127,6 @@ class _TweetDataset(data.Dataset):
                 self.tokenized_strings[row.Index] = TokenizedText(bert_tokenizer, row.text)
                 bert_input_ids_unpadded.append(bert_tokenizer.encode(row.text))
             except AssertionError:
-                # TODO: is this the same index as it was before??
-                # TODO: maybe do some sort of checking to indicate the error source
                 self.error_indexes.append(row.Index)
         df_filtered = df.drop(self.error_indexes)
         # this is X, the input matrix we will feed into the model.
@@ -348,14 +346,15 @@ class ModelPipeline:
         self.selected_id_loss_fn = selected_id_loss_fn
         self.prediction_threshold = prediction_threshold
 
-    def _get_loss(self, input_ids, masks, sentiment_labels, selected_ids) -> torch.Tensor:
-        # TODO: docstring
-        batch_size = input_ids.shape[0]
+    def _get_loss(self, train_data: TrainData) -> torch.Tensor:
+        batch_size = train_data.all_bert_input_ids.shape[0]
         selected_logits = self.model(
-            input_ids.to(self.dev), masks.to(self.dev), sentiment_labels.to(self.dev),
+            train_data.all_bert_input_ids.to(self.dev),
+            train_data.masks.to(self.dev),
+            train_data.sentiments.to(self.dev),
         )
         loss_fn = self.selected_id_loss_fn
-        return loss_fn(selected_logits.view(batch_size, -1), selected_ids)
+        return loss_fn(selected_logits.view(batch_size, -1), train_data.selected_ids)
 
     def _update_weights(self, loss) -> None:
         self.optim.zero_grad()
@@ -370,9 +369,9 @@ class ModelPipeline:
         for epoch in epoch_bar:
             if is_in_notebook:
                 secondary_bar.reset()
-            # TODO: this is such a jank unpacking...
-            for (_, input_ids, masks, sentiments, _, _, selected_ids,) in train_data_loader:
-                loss = self._get_loss(input_ids, masks, sentiments, selected_ids)
+            train_datas: Iterable[TrainData] = iter(train_data_loader)
+            for train_data in train_datas:
+                loss = self._get_loss(train_data)
                 losses.append(loss.item())
                 self._update_weights(loss)
                 if is_in_notebook:
