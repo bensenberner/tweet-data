@@ -1,11 +1,11 @@
 import transformers
 
-from kaggle_data_loader import TweetDataset as NewTweetDataset
+from kaggle_data_loader import TrainTweetDataset as NewTweetDataset
 from old_loader import TweetDataset as OldTweetDataset
 from test.test import DatasetTestCase
 from utils import load_small_df
 
-BERT_MODEL_TYPE = 'bert-base-cased'
+BERT_MODEL_TYPE = "bert-base-cased"
 
 
 class TestCompareOldDatasetToNewDataset(DatasetTestCase):

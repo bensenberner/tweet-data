@@ -7,6 +7,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import Adam
 from torch.utils import data
+from torch.utils.data import DataLoader
 from tqdm.notebook import tqdm
 
 from utils import RANDOM_SEED
@@ -120,7 +121,7 @@ class LabelData:
         return -1, -1
 
 
-class TweetDataset(data.Dataset):
+class TrainTweetDataset(data.Dataset):
     SENTIMENT_MAP = {"negative": 0, "positive": 1, "neutral": 2}
 
     def __init__(self, df, bert_tokenizer):
@@ -168,7 +169,9 @@ class TweetDataset(data.Dataset):
         self.selected_ids = pad_sequence(
             [torch.tensor([0] + label + [0]) for label in labels], batch_first=True
         ).float()  # Float for BCELoss
-        self.sentiment_labels = torch.tensor(df_filtered["sentiment"].apply(self.SENTIMENT_MAP.get))
+        self.sentiment_labels = torch.tensor(
+            list(df_filtered["sentiment"].apply(self.SENTIMENT_MAP.get))
+        )
 
     def __len__(self):
         return len(self.all_bert_input_ids)
@@ -179,8 +182,8 @@ class TweetDataset(data.Dataset):
             self.all_bert_input_ids[idx],
             self.bert_attention_masks[idx],
             self.selected_ids_start_end[idx],
-            self.selected_ids[idx],
             self.sentiment_labels[idx],
+            self.selected_ids[idx],
         )
 
 
@@ -290,15 +293,14 @@ class NetworkV3(nn.Module):
 
 
 class ModelPipeline:
-    def __init__(self, dev, bert_tokenizer, model, learning_rate, train_generator):
+    def __init__(self, dev, bert_tokenizer, model, learning_rate):
         self.bert_tokenizer = bert_tokenizer
         self.dev = dev
         self.model = model
         # TODO: allow optimizer to be specified?
         self.optim = Adam(model.parameters(), lr=learning_rate)
-        self.train_generator = train_generator
 
-    def _fit_pycharm(self, n_epochs):
+    def _fit_pycharm(self, train_generator: DataLoader, n_epochs):
         losses = []
         for epoch in range(n_epochs):
             for (
@@ -306,9 +308,9 @@ class ModelPipeline:
                 input_tokens,
                 attention_mask,
                 _,
-                selected_ids,
                 sentiment_labels,
-            ) in self.train_generator:
+                selected_ids,
+            ) in train_generator:
                 logits, loss = self.model(
                     input_tokens.to(self.dev),
                     attention_mask.to(self.dev),
@@ -322,10 +324,10 @@ class ModelPipeline:
             print(f"Epoch {epoch}")
         return losses
 
-    def _fit_notebook(self, n_epochs):
+    def _fit_notebook(self, train_data_loader: DataLoader, n_epochs):
         losses = []
         epoch_bar = tqdm(range(n_epochs))
-        secondary_bar = tqdm(total=len(train_generator))
+        secondary_bar = tqdm(total=len(train_data_loader))
         for _ in epoch_bar:
             secondary_bar.reset()
             for (
@@ -333,9 +335,9 @@ class ModelPipeline:
                 input_tokens,
                 attention_mask,
                 _,
-                selected_ids,
                 sentiment_labels,
-            ) in train_generator:
+                selected_ids,
+            ) in train_data_loader:
                 logits, loss = self.model(
                     input_tokens.to(dev),
                     attention_mask.to(dev),
@@ -350,10 +352,14 @@ class ModelPipeline:
         secondary_bar.close()
         return losses
 
-    def fit(self, n_epochs):
-        return self._fit_notebook(n_epochs) if in_notebook() else self._fit_pycharm(n_epochs)
+    def fit(self, train_data_loader: DataLoader, n_epochs):
+        return (
+            self._fit_notebook(train_data_loader, n_epochs)
+            if in_notebook()
+            else self._fit_pycharm(train_data_loader, n_epochs)
+        )
 
-    def pred(self, dataset: TweetDataset, threshold=0.6, batch_size=128):
+    def pred(self, dataset: TrainTweetDataset, threshold=0.6, batch_size=128):
         # TODO: docstring for threshold
 
         all_model_jaccard_scores = []
@@ -365,8 +371,8 @@ class ModelPipeline:
             input_tokens,
             attention_masks,
             actual_start_end,
-            selected_ids,
             sentiment_labels,
+            selected_ids,
         ) in data_loader:
             with torch.no_grad():
                 logits, _ = self.model(
@@ -401,6 +407,7 @@ class ModelPipeline:
 
 if __name__ == "__main__":
     # TODO: I'm sometimes getting index out of bound errors?? uh oh!!1 (maybe should change the random seed around to repro)
+    # TODO: need to have an example of a row that would raise an assertionerror and be filtered out
     torch.manual_seed(RANDOM_SEED)
     original_string = "I love the recursecenter its so #coolCantBelieve"
     BERT_MODEL_TYPE = "bert-base-cased"
@@ -412,8 +419,8 @@ if __name__ == "__main__":
             "sentiment": ["neutral", "positive"],
         }
     )
-    train_dataset = TweetDataset(df_, bert_tokenizer_)
-    train_generator = data.DataLoader(train_dataset, batch_size=1, shuffle=False)
+    train_dataset = TrainTweetDataset(df_, bert_tokenizer_)
+    train_data_loader = data.DataLoader(train_dataset, batch_size=1, shuffle=False)
 
     dev = "cpu"
     lr = 0.001
@@ -423,7 +430,6 @@ if __name__ == "__main__":
         bert_tokenizer=bert_tokenizer_,
         model=NetworkV3(BERT_MODEL_TYPE, differentiable_log_jaccard).to(dev),
         learning_rate=lr,
-        train_generator=train_generator,
     )
-    pipeline.fit(1)
+    pipeline.fit(train_data_loader, 1)
     pipeline.pred(dataset=train_dataset, threshold=threshold, batch_size=1)

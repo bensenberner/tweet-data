@@ -7,10 +7,10 @@ import torch
 import transformers
 from torch import tensor, Tensor
 
-from kaggle_data_loader import TweetDataset, LabelData
+from kaggle_data_loader import TrainTweetDataset, LabelData
 
-BERT_MODEL_TYPE = 'bert-base-cased'
-Pandas = namedtuple('Pandas', ['Index', 'text', 'selected_text'])
+BERT_MODEL_TYPE = "bert-base-cased"
+Pandas = namedtuple("Pandas", ["Index", "text", "selected_text"])
 
 
 class DatasetTestCase(unittest.TestCase):
@@ -28,7 +28,7 @@ class DatasetTestCase(unittest.TestCase):
     def assertDatasetItemEqual(self, expected_item: tuple, actual_item: tuple):
         are_equal, expected, actual = self._are_dataset_items_equal(expected_item, actual_item)
         if not are_equal:
-            self.fail(f'Expected {expected}, actual {actual}')
+            self.fail(f"Expected {expected}, actual {actual}")
 
     def assertDatasetItemInList(self, expected_item: tuple, actual_list_of_items: List[tuple]):
         for actual_item in actual_list_of_items:
@@ -40,19 +40,21 @@ class DatasetTestCase(unittest.TestCase):
 
 class TestTweetDataset(DatasetTestCase):
     def test(self):
-        df = pd.DataFrame({
-            'text': ['hello worldd', 'hi moon'],
-            'selected_text': ['worldd', 'hi moon'],
-            'sentiment': ['neutral', 'positive']
-        })
-        dataset = TweetDataset(df, transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE))
+        df = pd.DataFrame(
+            {
+                "text": ["hello worldd", "hi moon"],
+                "selected_text": ["worldd", "hi moon"],
+                "sentiment": ["neutral", "positive"],
+            }
+        )
+        dataset = TrainTweetDataset(df, transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE))
         expected_item_0 = (
             0,
             tensor([101, 19082, 1362, 1181, 102]),
             tensor([1, 1, 1, 1, 1]),
             tensor([2, 4]),
-            tensor([0., 0., 1., 1., 0.]),
-            tensor(2)
+            tensor([0.0, 0.0, 1.0, 1.0, 0.0]),
+            tensor(2),
         )
         self.assertDatasetItemEqual(expected_item_0, dataset[0])
         self.assertDatasetItemInList(expected_item_0, list(dataset))
@@ -65,7 +67,7 @@ class TestLabelData(unittest.TestCase):
         text = "hello worldd"
         self.assertNotEqual(
             bert_tokenizer.encode(text),
-            bert_tokenizer.convert_tokens_to_ids(bert_tokenizer.tokenize(text))
+            bert_tokenizer.convert_tokens_to_ids(bert_tokenizer.tokenize(text)),
         )
 
     def test(self):
