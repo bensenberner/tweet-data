@@ -4,3 +4,4 @@
 - can find() handle empty strings?
     - write a few test cases for find
 - try out using PyTorch Lightning for better code quality?
+- Why does pred_selected_text throw an error if I run it twice on the same data?

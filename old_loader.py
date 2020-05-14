@@ -457,5 +457,3 @@ if __name__ == "__main__":
             all_benchmark_jaccard_scores.append(
                 (i, jaccard(selected_text, predicted_selected_text))
             )
-    print(len(all_benchmark_jaccard_scores))
-    print(len(all_model_jaccard_scores))

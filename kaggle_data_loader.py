@@ -237,14 +237,14 @@ def jaccard_from_start_end(s1, e1, s2, e2):
 
 
 def jaccard(str1, str2, debug=False):
-    a = set(str1.lower().split())
-    b = set(str2.lower().split())
-    c = a.intersection(b)
+    str1_set = set(str1.lower().split())
+    str2_set = set(str2.lower().split())
+    intersection = str1_set.intersection(str2_set)
     if debug:
-        print(a)
-        print(b)
-        print(c)
-    return float(len(c)) / (len(a) + len(b) - len(c))
+        print(str1_set)
+        print(str2_set)
+        print(intersection)
+    return float(len(intersection)) / (len(str1_set) + len(str2_set) - len(intersection))
 
 
 class NetworkV3(nn.Module):
@@ -394,6 +394,7 @@ class ModelPipeline:
     # TODO: change to TestTweetDataset (has no actual start or end idx)
     def pred_selected_text(self, dataset: TrainTweetDataset, batch_size=128):
         predicted_selected_texts = []
+        # TODO: do I really need a dataloader for doing prediction?
         data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
         for idxes, input_ids, masks, actual_start_ends, sentiments, _ in data_loader:
             with torch.no_grad():
@@ -416,12 +417,21 @@ class ModelPipeline:
                 predicted_selected_texts.append(predicted_selected_text)
         return predicted_selected_texts
 
+    def jaccard_scores(self, dataset, actual_selected_texts):
+        predicted_selected_texts = self.pred_selected_text(dataset)
+        # TODO: create a dataframe out of this?? something instead of using raw tuples
+        return [
+            (idx, jaccard(predicted_selected_text, actual_selected_text))
+            for idx, (predicted_selected_text, actual_selected_text) in enumerate(
+                zip(predicted_selected_texts, actual_selected_texts)
+            )
+        ]
+
 
 def main():
     # TODO: I'm sometimes getting index out of bound errors?? uh oh!!1 (maybe should change the random seed around to repro)
     # TODO: need to have an example of a row that would raise an assertionerror and be filtered out
     torch.manual_seed(RANDOM_SEED)
-    original_string = "I love the recursecenter its so #coolCantBelieve"
     BERT_MODEL_TYPE = "bert-base-cased"
     bert_tokenizer_ = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
     df_ = pd.DataFrame(
@@ -446,7 +456,12 @@ def main():
         prediction_threshold=threshold,
     )
     pipeline.fit(train_data_loader, 1)
-    print(pipeline.pred_selected_text(train_dataset))
+    # TODO: TODO: WHY DOES IT THROW LIST IDX OUT OF RANGE IF I RUN THIS TWICE??
+    # pipeline.pred_selected_text(train_dataset)
+    actual_selected_texts = [
+        train_dataset.tokenized_strings[row[0]].selected_text for row in train_dataset
+    ]
+    print(pipeline.jaccard_scores(train_dataset, actual_selected_texts))
 
 
 if __name__ == "__main__":
