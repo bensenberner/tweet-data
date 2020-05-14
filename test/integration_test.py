@@ -1,6 +1,6 @@
 import transformers
 
-from kaggle_data_loader import TrainTweetDataset as NewTweetDataset
+from kaggle_data_loader import _TweetDataset as NewTweetDataset
 from old_loader import TweetDataset as OldTweetDataset
 from test.test import DatasetTestCase
 from utils import load_small_df

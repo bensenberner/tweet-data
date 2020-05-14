@@ -7,7 +7,7 @@ import torch
 import transformers
 from torch import tensor, Tensor
 
-from kaggle_data_loader import TrainTweetDataset, LabelData
+from kaggle_data_loader import _TweetDataset, LabelData
 
 BERT_MODEL_TYPE = "bert-base-cased"
 Pandas = namedtuple("Pandas", ["Index", "text", "selected_text"])
@@ -47,7 +47,7 @@ class TestTweetDataset(DatasetTestCase):
                 "sentiment": ["neutral", "positive"],
             }
         )
-        dataset = TrainTweetDataset(df, transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE))
+        dataset = _TweetDataset(df, transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE))
         expected_item_0 = (
             0,
             tensor([101, 19082, 1362, 1181, 102]),

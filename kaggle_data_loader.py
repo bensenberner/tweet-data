@@ -25,9 +25,8 @@ def in_notebook():
     return True
 
 
-class TokenizedString:
-    def __init__(self, bert_tokenizer, full_text, selected_text):
-        self.selected_text = selected_text
+class TokenizedText:
+    def __init__(self, bert_tokenizer, full_text):
         self.spaced_orig_tokens = full_text.split(" ")
         # list of len(original_str.split(' ')). Each index represents an orig token,
         # each value is the index of the FIRST bert token that corresponds to the orig token
@@ -61,19 +60,6 @@ class TokenizedString:
         orig_start_idx = self.bert_to_spaced_orig_idx[bert_start_idx]
         orig_end_idx = self.bert_to_spaced_orig_idx[bert_end_idx - 1]
         return " ".join(self.spaced_orig_tokens[orig_start_idx : orig_end_idx + 1])
-
-
-class TokenizedStrings:
-    def __init__(self, bert_tokenizer, train_df: pd.DataFrame):
-        self.data = {
-            row_idx: TokenizedString(
-                bert_tokenizer=bert_tokenizer, full_text=row.text, selected_text=row.selected_text,
-            )
-            for row_idx, row in train_df.iterrows()
-        }
-
-    def __getitem__(self, idx):
-        return self.data[idx]
 
 
 class LabelData:
@@ -122,32 +108,27 @@ class LabelData:
         return -1, -1
 
 
-class TrainTweetDataset(data.Dataset):
+# namedtuple('TrainRow', ['#TODO: all the train row stuff including label'])
+
+
+TestData = namedtuple("TestData", ["idxes", "all_bert_input_ids", "masks", "sentiments"])
+
+
+# not meant to be directly instantiated in order to avoid confusion
+class _TweetDataset(data.Dataset):
     SENTIMENT_MAP = {"negative": 0, "positive": 1, "neutral": 2}
 
     def __init__(self, df, bert_tokenizer):
-        selected_ids_start_end_idx_raw = []
-        # each label is a list of 1s and 0s, representing whether the corresponding bert token
-        # was contained in the selected text or not
-        labels: List[List[int]] = []
         bert_input_ids_unpadded = []
         self.indexes = []  # the index of the row from the original df
-        self.error_indexes = []
         self.tokenized_strings = {}
+        self.error_indexes = []
         # TODO: TODO: does this row_idx mess things up??
         for row in df.itertuples():
             try:
-                label_data = LabelData(bert_tokenizer, row)
                 self.indexes.append(row.Index)
+                self.tokenized_strings[row.Index] = TokenizedText(bert_tokenizer, row.text)
                 bert_input_ids_unpadded.append(bert_tokenizer.encode(row.text))
-                selected_ids_start_end_idx_raw.append(
-                    # TODO: make sure that end_idx is always exclusive
-                    (label_data.start_idx, label_data.end_idx)
-                )
-                labels.append(label_data.label)
-                self.tokenized_strings[row.Index] = TokenizedString(
-                    bert_tokenizer, row.text, row.selected_text
-                )
             except AssertionError:
                 # TODO: is this the same index as it was before??
                 # TODO: maybe do some sort of checking to indicate the error source
@@ -158,6 +139,61 @@ class TrainTweetDataset(data.Dataset):
             [torch.tensor(e) for e in bert_input_ids_unpadded], batch_first=True
         )
         self.bert_attention_masks = torch.min(self.all_bert_input_ids, torch.tensor(1)).detach()
+        self.sentiments = torch.tensor(list(df_filtered["sentiment"].apply(self.SENTIMENT_MAP.get)))
+
+    def __len__(self):
+        return len(self.all_bert_input_ids)
+
+    def __getitem__(self, idx):
+        return TestData(
+            self.indexes[idx],
+            self.all_bert_input_ids[idx],
+            self.bert_attention_masks[idx],
+            self.sentiments[idx],
+        )
+
+
+# TODO: some sort of subclassing ?? Can namedtuples use inheritance??
+TrainData = namedtuple(
+    "TrainData",
+    [
+        "idxes",
+        "all_bert_input_ids",
+        "masks",
+        "sentiments",
+        "selected_ids_start_end_idx",
+        "selected_text",
+        "selected_ids",
+    ],
+)
+
+
+class TrainTweetDataset(_TweetDataset):
+    def __init__(self, df_with_selected_texts: pd.DataFrame, bert_tokenizer):
+        super(TrainTweetDataset, self).__init__(df_with_selected_texts, bert_tokenizer)
+
+        selected_ids_start_end_idx_raw = []
+        # each label is a list of 1s and 0s, representing whether the corresponding bert token
+        # was contained in the selected text or not
+        labels: List[List[int]] = []
+        # TODO: this is literally just a series from the original db...why am I doing this
+        self.selected_text = []
+
+        for row in df_with_selected_texts.itertuples():
+            label_data = LabelData(bert_tokenizer, row)
+            # TODO: TODO: couldn't I just get LabelData??
+            selected_ids_start_end_idx_raw.append(
+                # TODO: make sure that end_idx is always exclusive
+                (label_data.start_idx, label_data.end_idx)
+            )
+            labels.append(label_data.label)
+            self.selected_text.append(row.selected_text)
+        # Append torch.tensor([0]) to start because input_tokens include [CLS] token as the first one
+        # and [SEQ] as last one.
+        self.selected_ids = pad_sequence(
+            [torch.tensor([0] + label + [0]) for label in labels], batch_first=True
+        ).float()  # Float for BCELoss
+        # TODO^^ if we aren't using BCE loss do we still need this?
 
         # TODO: rename this somehow
         # Offset by one for [CLS]
@@ -165,27 +201,24 @@ class TrainTweetDataset(data.Dataset):
             [(start_idx + 1, end_idx + 1) for start_idx, end_idx in selected_ids_start_end_idx_raw]
         )
 
-        # Append torch.tensor([0]) to start because input_tokens include [CLS] token as the first one
-        # and [SEQ] as last one.
-        self.selected_ids = pad_sequence(
-            [torch.tensor([0] + label + [0]) for label in labels], batch_first=True
-        ).float()  # Float for BCELoss
-        self.sentiment_labels = torch.tensor(
-            list(df_filtered["sentiment"].apply(self.SENTIMENT_MAP.get))
-        )
-
-    def __len__(self):
-        return len(self.all_bert_input_ids)
-
     def __getitem__(self, idx):
-        return (
+        return TrainData(
             self.indexes[idx],
             self.all_bert_input_ids[idx],
             self.bert_attention_masks[idx],
+            self.sentiments[idx],
             self.selected_ids_start_end[idx],
-            self.sentiment_labels[idx],
+            self.selected_text[idx],  # TODO: am I sure I need this?
             self.selected_ids[idx],
         )
+
+
+class TestTweetDataset(_TweetDataset):
+    pass
+
+
+def create_train_test_datasets() -> Tuple[_TweetDataset]:
+    pass
 
 
 Prediction = namedtuple("Prediction", ["start_idx", "end_idx", "max_logit_sum"])
@@ -340,7 +373,8 @@ class ModelPipeline:
         for epoch in epoch_bar:
             if is_in_notebook:
                 secondary_bar.reset()
-            for (_, input_ids, masks, _, sentiments, selected_ids,) in train_data_loader:
+            # TODO: this is such a jank unpacking...
+            for (_, input_ids, masks, sentiments, _, _, selected_ids) in train_data_loader:
                 loss = self._get_loss(input_ids, masks, sentiments, selected_ids)
                 losses.append(loss.item())
                 self._update_weights(loss)
@@ -353,7 +387,7 @@ class ModelPipeline:
         return losses
 
     # TODO: this should not be TrainTweetDataset
-    def old_pred(self, dataset: TrainTweetDataset, batch_size=128):
+    def old_pred(self, dataset: _TweetDataset, batch_size=128):
         # TODO: docstring for threshold
 
         all_model_jaccard_scores = []
@@ -361,18 +395,29 @@ class ModelPipeline:
         # TODO: set these in params
         # TODO: do I even need data_loader in pred?
         data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
-        for (df_idxes, input_ids, masks, actual_start_end, sentiment_labels, _,) in data_loader:
+        for (
+            df_idxes,
+            input_ids,
+            masks,
+            sentiments,
+            actual_start_end,
+            selected_texts,
+            _,
+        ) in data_loader:
             with torch.no_grad():
                 logits = self.model(
-                    input_ids.to(self.dev), masks.to(self.dev), sentiment_labels.to(self.dev),
+                    input_ids.to(self.dev), masks.to(self.dev), sentiments.to(self.dev),
                 )
             prediction_vectors = torch.sigmoid(logits)
             pred_start_end = [
                 ls_find_start_end(pvec, self.prediction_threshold) for pvec in prediction_vectors
             ]
-            for idx, (pred_start, pred_end, _), (actual_start, actual_end) in zip(
-                df_idxes, pred_start_end, actual_start_end
-            ):
+            for (
+                idx,
+                (pred_start, pred_end, _),
+                (actual_start, actual_end),
+                actual_selected_text,
+            ) in zip(df_idxes, pred_start_end, actual_start_end, selected_texts):
                 # TODO: using tokenized_string is new!! is it working??
                 tokenized_string = dataset.tokenized_strings[int(idx)]
                 # TODO: update ls_find_start_end so that we don't need to do this
@@ -385,28 +430,30 @@ class ModelPipeline:
                 predicted_selected_text = tokenized_string.make_orig_substring_from_bert_idxes(
                     pred_start - 1, pred_end - 1
                 )
-                actual_selected_text = tokenized_string.selected_text
                 all_benchmark_jaccard_scores.append(
                     (idx, jaccard(actual_selected_text, predicted_selected_text))
                 )
         return all_model_jaccard_scores, all_benchmark_jaccard_scores
 
     # TODO: change to TestTweetDataset (has no actual start or end idx)
-    def pred_selected_text(self, dataset: TrainTweetDataset, batch_size=128):
+    def pred_selected_text(self, dataset: _TweetDataset, batch_size=128):
         predicted_selected_texts = []
         # TODO: do I really need a dataloader for doing prediction?
         data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
-        for idxes, input_ids, masks, actual_start_ends, sentiments, _ in data_loader:
+        # TODO: don't explicitly unpack so this can handle train and test
+        for data_row in data_loader:
             with torch.no_grad():
                 logits = self.model(
-                    input_ids.to(self.dev), masks.to(self.dev), sentiments.to(self.dev),
+                    data_row.all_bert_input_ids.to(self.dev),
+                    data_row.masks.to(self.dev),
+                    data_row.sentiments.to(self.dev),
                 )
             prediction_vectors = torch.sigmoid(logits)
             preds = [
                 ls_find_start_end(prediction_vector, self.prediction_threshold)
                 for prediction_vector in prediction_vectors
             ]
-            for idx, pred in zip(idxes, preds):
+            for idx, pred in zip(data_row.idxes, preds):
                 tokenized_string = dataset.tokenized_strings[int(idx)]
                 pred_start_idx = max(pred.start_idx, 1)
                 pred_end_idx = min(pred.end_idx, len(tokenized_string.bert_tokens) + 1)
@@ -434,14 +481,14 @@ def main():
     torch.manual_seed(RANDOM_SEED)
     BERT_MODEL_TYPE = "bert-base-cased"
     bert_tokenizer_ = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
-    df_ = pd.DataFrame(
+    train_df_ = pd.DataFrame(
         {
             "text": ["hello worldd", "hi moon"],
-            "selected_text": ["worldd", "hi moon"],
             "sentiment": ["neutral", "positive"],
+            "selected_text": ["worldd", "hi moon"],
         }
     )
-    train_dataset = TrainTweetDataset(df_, bert_tokenizer_)
+    train_dataset = TrainTweetDataset(train_df_, bert_tokenizer_)
     train_data_loader = data.DataLoader(train_dataset, batch_size=1, shuffle=False)
 
     dev = "cpu"
@@ -458,10 +505,14 @@ def main():
     pipeline.fit(train_data_loader, 1)
     # TODO: TODO: WHY DOES IT THROW LIST IDX OUT OF RANGE IF I RUN THIS TWICE??
     # pipeline.pred_selected_text(train_dataset)
-    actual_selected_texts = [
-        train_dataset.tokenized_strings[row[0]].selected_text for row in train_dataset
-    ]
-    print(pipeline.jaccard_scores(train_dataset, actual_selected_texts))
+    # actual_selected_texts = train_dataset.selected_text
+    # print(pipeline.jaccard_scores(train_dataset, actual_selected_texts))
+
+    test_df = pd.DataFrame(
+        {"text": ["hi worldd", "hello moon"], "sentiment": ["neutral", "positive"]}
+    )
+    test_dataset = TestTweetDataset(test_df, bert_tokenizer_)
+    print(pipeline.pred_selected_text(test_dataset))
 
 
 if __name__ == "__main__":
