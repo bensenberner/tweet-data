@@ -7,7 +7,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.optim import Adam
 from torch.utils import data
 
-from utils import load_small_df, RANDOM_SEED
+from utils import load_cleaned_df, RANDOM_SEED
 
 BERT_MODEL_TYPE = "bert-base-cased"
 
@@ -366,7 +366,7 @@ def jaccard(str1, str2, debug=False):
 
 if __name__ == "__main__":
     torch.manual_seed(RANDOM_SEED)
-    train_df = load_small_df()
+    train_df = load_cleaned_df()
     bert_tokenizer = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
     ben_tokenizer = BenTokenizer(bert_tokenizer)
     train_dataset = TweetDataset(train_df, bert_tokenizer)

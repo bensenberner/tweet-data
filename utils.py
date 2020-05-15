@@ -6,7 +6,7 @@ import pandas as pd
 RANDOM_SEED = 42
 
 
-def load_small_df(path):
+def load_cleaned_df(path):
     _RE_COMBINE_WHITESPACE = re.compile(r"\s+")
 
     def clean(string):

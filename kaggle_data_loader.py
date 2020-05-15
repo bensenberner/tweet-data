@@ -71,18 +71,30 @@ class LabelData:
             NOTE that these this range defined by these indexes might be a little too wide in order to make sure the full
             selected text was captured.
         """
-        split_text = bert_tokenizer.tokenize(row.text)
-        split_selected_text = bert_tokenizer.tokenize(row.selected_text)
-        self.start_idx, self.end_idx = self.find(split_text, split_selected_text)
-        if self.start_idx == -1:
-            # TODO: get a count of how often this happens (in exploratory notebook)
+        text_bert_toks = bert_tokenizer.tokenize(row.text)
+        sel_text_bert_toks = bert_tokenizer.tokenize(row.selected_text)
+        self.bert_text_start_idx, self.bert_text_end_idx = self.find(
+            text_bert_toks, sel_text_bert_toks
+        )
+        if self.bert_text_start_idx == -1:
+            # this happens 372 times in version as of this commit for all of train.csv
             raise AssertionError(f"Could not find '{row.selected_text}' in '{row.text}'")
         self.label = [
-            1 if self.start_idx <= idx < self.end_idx else 0 for idx in range(len(split_text))
+            1 if self.bert_text_start_idx <= idx < self.bert_text_end_idx else 0
+            for idx in range(len(text_bert_toks))
         ]
 
     @staticmethod
-    def find(haystack: List[str], needle: List[str]) -> Tuple[int, int]:
+    def _is_needle_at_haystack_idx(haystack, hs_idx, needle):
+        """
+        Found this on stackoverflow. Takes advantage of short circuiting to avoid creating temporary slices
+        :return: True if the needle is contained within haystack, where needle[0] is at haystack[hs_idx]
+        """
+        return haystack[hs_idx] == needle[0] and (
+            haystack[hs_idx + 1 : hs_idx + len(needle)] == needle[1:]
+        )
+
+    def find(self, haystack: List[str], needle: List[str]) -> Tuple[int, int]:
         """
         :param haystack: list in which `needle` is being looked for
         :param needle: we are trying to find the indexes in which `needle` is located in `haystack`
@@ -90,21 +102,17 @@ class LabelData:
             If `needle` is not in `haystack` then we return (-1, -1)
         TODO: explain how we handle needles that are almost in haystack except they're truncated at the ends
         """
+        # hs stands for haystack
         for start_offset in [0, 1]:
             for end_offset in [0, -1]:
-                truncated_needle = needle[0 + start_offset : len(needle) + end_offset]
-                if len(truncated_needle) == 0:
+                sub_needle = needle[0 + start_offset : len(needle) + end_offset]
+                if len(sub_needle) == 0:
                     continue
-                for haystack_idx in range(len(haystack)):
-                    # TODO: can I handle empty strings??
-                    if (
-                        haystack[haystack_idx] == truncated_needle[0]
-                        and haystack[haystack_idx : haystack_idx + len(truncated_needle)]
-                    ):
-                        # always returning a range of len(needle)
+                for hs_idx in range(len(haystack)):
+                    if self._is_needle_at_haystack_idx(haystack, hs_idx, sub_needle):
                         return (
-                            haystack_idx - start_offset,
-                            haystack_idx - start_offset + len(needle),
+                            hs_idx - start_offset,
+                            hs_idx - start_offset + len(needle),
                         )
         return -1, -1
 
@@ -180,7 +188,7 @@ class TrainTweetDataset(_TweetDataset):
             # TODO: TODO: couldn't I just get LabelData??
             selected_ids_start_end_idx_raw.append(
                 # TODO: make sure that end_idx is always exclusive
-                (label_data.start_idx, label_data.end_idx)
+                (label_data.bert_text_start_idx, label_data.bert_text_end_idx)
             )
             labels.append(label_data.label)
             self.selected_text.append(row.selected_text)
