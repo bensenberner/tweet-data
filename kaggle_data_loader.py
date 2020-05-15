@@ -128,25 +128,21 @@ class _TweetDataset(data.Dataset):
     SENTIMENT_MAP = {"negative": 0, "positive": 1, "neutral": 2}
 
     def __init__(self, df, bert_tokenizer):
-        bert_input_ids_unpadded = []
         self.indexes = []  # the index of the row from the original df
+        bert_input_ids_unpadded = []
         self.tokenized_strings = {}
-        self.error_indexes = []
-        # TODO: TODO: does this row_idx mess things up??
+        sentiments_raw = []
         for row in df.itertuples():
-            try:
-                self.indexes.append(row.Index)
-                self.tokenized_strings[row.Index] = TokenizedText(bert_tokenizer, row.text)
-                bert_input_ids_unpadded.append(bert_tokenizer.encode(row.text))
-            except AssertionError:
-                self.error_indexes.append(row.Index)
-        df_filtered = df.drop(self.error_indexes)
+            self.indexes.append(row.Index)
+            bert_input_ids_unpadded.append(bert_tokenizer.encode(row.text))
+            self.tokenized_strings[row.Index] = TokenizedText(bert_tokenizer, row.text)
+            sentiments_raw.append(self.SENTIMENT_MAP.get(row.sentiment))
         # this is X, the input matrix we will feed into the model.
         self.bert_input_id_lists: torch.Tensor = pad_sequence(
             [torch.tensor(e) for e in bert_input_ids_unpadded], batch_first=True
         )
         self.bert_attention_masks = torch.min(self.bert_input_id_lists, torch.tensor(1)).detach()
-        self.sentiments = torch.tensor(list(df_filtered["sentiment"].apply(self.SENTIMENT_MAP.get)))
+        self.sentiments = torch.tensor(sentiments_raw)
 
     def __len__(self):
         return len(self.bert_input_id_lists)
@@ -177,24 +173,30 @@ TrainData = namedtuple(
 
 class TrainTweetDataset(_TweetDataset):
     def __init__(self, df_with_selected_texts: pd.DataFrame, bert_tokenizer):
-        super(TrainTweetDataset, self).__init__(df_with_selected_texts, bert_tokenizer)
-
         selected_ids_start_end_idx_raw = []
         # each label is a list of 1s and 0s, representing whether the corresponding bert token
         # was contained in the selected text or not
         labels: List[List[int]] = []
         # TODO: this is literally just a series from the original db...why am I doing this
         self.selected_text = []
-
+        self.error_indexes = []
         for row in df_with_selected_texts.itertuples():
-            label_data = LabelData(bert_tokenizer, row)
-            # TODO: TODO: couldn't I just get LabelData?
-            selected_ids_start_end_idx_raw.append(
-                # TODO: make sure that end_idx is always exclusive
-                (label_data.bert_text_start_idx, label_data.bert_text_end_idx)
-            )
-            labels.append(label_data.label)
-            self.selected_text.append(row.selected_text)
+            try:
+                label_data = LabelData(bert_tokenizer, row)
+                # TODO: TODO: couldn't I just get LabelData?
+                selected_ids_start_end_idx_raw.append(
+                    # TODO: make sure that end_idx is always exclusive
+                    (label_data.bert_text_start_idx, label_data.bert_text_end_idx)
+                )
+                labels.append(label_data.label)
+                self.selected_text.append(row.selected_text)
+            except AssertionError:
+                self.error_indexes.append(row.Index)
+        df_filtered = df_with_selected_texts.drop(self.error_indexes)
+
+        # initialize super with FILTERED df
+        super(TrainTweetDataset, self).__init__(df_filtered, bert_tokenizer)
+
         # Append torch.tensor([0]) to start because input_tokens include [CLS] token as the first one
         # and [SEQ] as last one.
         self.selected_ids = pad_sequence(
@@ -343,7 +345,9 @@ class ModelPipeline:
         :param model: just needs to implement forward()
         :param selected_id_loss_fn: takes in predicted logits and actual labels (which are between 0 and 1) for multiple examples, and returns the loss for each example
         :param learning_rate: learning rate for the optimizer
-        :param prediction_threshold: # TODO
+        :param prediction_threshold: when, for a given input text, we attempt to predict the selected text
+            we first produce a vector of logits representing the probability that each individual BERT token
+            derived from the input text is or is not "selected."
         """
         self.bert_tokenizer = bert_tokenizer
         self.dev = dev
@@ -430,15 +434,14 @@ class ModelPipeline:
 
 
 def main():
-    # TODO: need to have an example of a row that would raise an assertionerror and be filtered out
     torch.manual_seed(RANDOM_SEED)
     BERT_MODEL_TYPE = "bert-base-cased"
     bert_tokenizer_ = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
     train_df_ = pd.DataFrame(
         {
-            "text": ["hello worldd", "hi moon"],
-            "sentiment": ["neutral", "positive"],
-            "selected_text": ["worldd", "hi moon"],
+            "text": ["hello worldd", "selected text wrong", "hi moon"],
+            "sentiment": ["neutral", "negative", "positive"],
+            "selected_text": ["worldd", "not present in text", "hi moon"],
         }
     )
     train_dataset = TrainTweetDataset(train_df_, bert_tokenizer_)

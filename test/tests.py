@@ -26,6 +26,29 @@ class TweetTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.bert_tokenizer = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
 
+    @staticmethod
+    def _are_dataset_items_equal(expected_item: tuple, actual_item: tuple):
+        for expected_element, actual_element in zip(expected_item, actual_item):
+            if isinstance(expected_element, Tensor):
+                if not torch.equal(expected_element, actual_element):
+                    return False, expected_element, actual_element
+            else:
+                if not expected_element == actual_element:
+                    return False, expected_element, actual_element
+        return True, None, None
+
+    def assertDatasetItemEqual(self, expected_item: tuple, actual_item: tuple):
+        are_equal, expected, actual = self._are_dataset_items_equal(expected_item, actual_item)
+        if not are_equal:
+            self.fail(f"Expected {expected}, actual {actual}")
+
+    def assertDatasetItemInList(self, expected_item: tuple, actual_list_of_items: List[tuple]):
+        for actual_item in actual_list_of_items:
+            are_equal, _, _ = self._are_dataset_items_equal(expected_item, actual_item)
+            if are_equal:
+                return
+        self.fail("Unable to find item in list")
+
 
 class TestTokenizedText(TweetTestCase):
     def test_properties(self):
@@ -188,52 +211,6 @@ class TestLabelData(TweetTestCase):
             LabelData(self.bert_tokenizer, row)
 
 
-class DatasetTestCase(unittest.TestCase):
-    @staticmethod
-    def _are_dataset_items_equal(expected_item: tuple, actual_item: tuple):
-        for expected_element, actual_element in zip(expected_item, actual_item):
-            if isinstance(expected_element, Tensor):
-                if not torch.equal(expected_element, actual_element):
-                    return False, expected_element, actual_element
-            else:
-                if not expected_element == actual_element:
-                    return False, expected_element, actual_element
-        return True, None, None
-
-    def assertDatasetItemEqual(self, expected_item: tuple, actual_item: tuple):
-        are_equal, expected, actual = self._are_dataset_items_equal(expected_item, actual_item)
-        if not are_equal:
-            self.fail(f"Expected {expected}, actual {actual}")
-
-    def assertDatasetItemInList(self, expected_item: tuple, actual_list_of_items: List[tuple]):
-        for actual_item in actual_list_of_items:
-            are_equal, _, _ = self._are_dataset_items_equal(expected_item, actual_item)
-            if are_equal:
-                return
-        self.fail("Unable to find item in list")
-
-
-class TestTestTweetDataset(DatasetTestCase):
-    def test_with_normal_data(self):
-        df = pd.DataFrame(
-            {
-                "text": ["hello worldd", "hi moon"],
-                "selected_text": ["worldd", "hi moon"],
-                "sentiment": ["neutral", "positive"],
-            }
-        )
-        dataset = TestTweetDataset(df, transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE))
-        expected_item_0 = TestData(
-            idxes=0,
-            all_bert_input_ids=tensor([101, 19082, 1362, 1181, 102]),
-            masks=tensor([1, 1, 1, 1, 1]),
-            sentiments=tensor(2),
-        )
-        self.assertListEqual([], dataset.error_indexes)
-        self.assertDatasetItemEqual(expected_item_0, dataset[0])
-        self.assertDatasetItemInList(expected_item_0, list(dataset))
-
-
 class TestFindStartEnd(unittest.TestCase):
     def test_entire(self):
         raw_logits = torch.tensor([0.1, 0.2, 0.3, 0.2, 0.1])
@@ -258,7 +235,27 @@ class TestFindStartEnd(unittest.TestCase):
         self.assertEqual(expected_pred, pred)
 
 
-class TestTrainTweetDataset(DatasetTestCase):
+class TestTestTweetDataset(TweetTestCase):
+    def test_with_normal_data(self):
+        df = pd.DataFrame(
+            {
+                "text": ["hello worldd", "hi moon"],
+                "selected_text": ["worldd", "hi moon"],
+                "sentiment": ["neutral", "positive"],
+            }
+        )
+        dataset = TestTweetDataset(df, self.bert_tokenizer)
+        expected_item_0 = TestData(
+            idxes=0,
+            all_bert_input_ids=tensor([101, 19082, 1362, 1181, 102]),
+            masks=tensor([1, 1, 1, 1, 1]),
+            sentiments=tensor(2),
+        )
+        self.assertDatasetItemEqual(expected_item_0, dataset[0])
+        self.assertDatasetItemInList(expected_item_0, list(dataset))
+
+
+class TestTrainTweetDataset(TweetTestCase):
     def test_normal_data(self):
         df = pd.DataFrame(
             {
@@ -267,7 +264,7 @@ class TestTrainTweetDataset(DatasetTestCase):
                 "sentiment": ["neutral", "positive"],
             }
         )
-        dataset = TrainTweetDataset(df, transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE))
+        dataset = TrainTweetDataset(df, self.bert_tokenizer)
 
         expected_item_0 = TrainData(
             idxes=0,
@@ -281,3 +278,24 @@ class TestTrainTweetDataset(DatasetTestCase):
         self.assertListEqual([], dataset.error_indexes)
         self.assertDatasetItemEqual(expected_item_0, dataset[0])
         self.assertDatasetItemInList(expected_item_0, list(dataset))
+
+    def test_data_with_row_that_is_filtered_out(self):
+        df = pd.DataFrame(
+            {
+                "text": ["bad bad dog", "selected text wrong", "hi cat"],
+                "sentiment": ["negative", "neutral", "positive"],
+                "selected_text": ["bad bad", "not present in text", "hi"],
+            }
+        )
+        dataset = TrainTweetDataset(df, self.bert_tokenizer)
+
+        # skip the middle df row of idx 1 because selected text was not present in text
+        self.assertEqual([0, 2], dataset.indexes)
+        self.assertTrue(
+            tensor([[1, 1, 1, 1, 1], [1, 1, 1, 1, 0]]).equal(dataset.bert_attention_masks)
+        )
+        self.assertTrue(
+            tensor([[101, 2213, 2213, 3676, 102], [101, 20844, 5855, 102, 0]]).equal(
+                dataset.bert_input_id_lists
+            )
+        )
