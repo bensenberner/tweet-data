@@ -14,6 +14,8 @@ from kaggle_data_loader import (
     TrainTweetDataset,
     TrainData,
     TestData,
+    Prediction,
+    ls_find_start_end,
 )
 
 BERT_MODEL_TYPE = "bert-base-cased"
@@ -230,6 +232,30 @@ class TestTestTweetDataset(DatasetTestCase):
         self.assertListEqual([], dataset.error_indexes)
         self.assertDatasetItemEqual(expected_item_0, dataset[0])
         self.assertDatasetItemInList(expected_item_0, list(dataset))
+
+
+class TestFindStartEnd(unittest.TestCase):
+    def test_entire(self):
+        raw_logits = torch.tensor([0.1, 0.2, 0.3, 0.2, 0.1])
+        mask = torch.tensor([1, 1, 1, 1, 1])
+        threshold = 0
+
+        pred = ls_find_start_end(raw_logits, mask, threshold)
+
+        # note the max_logit_sum. That means that the last value was NOT included in the range.
+        # this is because we assume the last token (with mask = 1) to be the [SEQ] token which we don't include
+        expected_pred = Prediction(start_idx=0, end_idx=4, max_logit_sum=torch.tensor(0.8))
+        self.assertEqual(expected_pred, pred)
+
+    def test_last_is_masked(self):
+        raw_logits = torch.tensor([0.1, 0.2, 0.3, 0.2, 0.1])
+        mask = torch.tensor([1, 1, 1, 1, 0])
+        threshold = 0
+
+        pred = ls_find_start_end(raw_logits, mask, threshold)
+
+        expected_pred = Prediction(start_idx=0, end_idx=3, max_logit_sum=torch.tensor(0.6))
+        self.assertEqual(expected_pred, pred)
 
 
 class TestTrainTweetDataset(DatasetTestCase):

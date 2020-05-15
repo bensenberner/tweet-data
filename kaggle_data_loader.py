@@ -50,17 +50,19 @@ class TokenizedText:
     def __repr__(self):
         return str(self.bert_tokens)
 
-    def make_orig_substring_from_bert_idxes(self, bert_start_idx: int, bert_end_idx: int) -> str:
+    def make_orig_substring_from_bert_idxes(
+        self, bert_start_idx: int, bert_exclusive_end_idx: int
+    ) -> str:
         """
         Given a start and end index from the bert token list, this will create
         a substring from the original string composed of the bert tokens within
         that start and end bert index range.
 
         :param bert_start_idx: start index from the bert token list
-        :param bert_end_idx: end index from the bert token list. CURRENTLY exclusive TODO: fix this!
+        :param bert_exclusive_end_idx: end index from the bert token list. CURRENTLY exclusive TODO: fix this?
         """
         orig_start_idx = self.bert_to_spaced_orig_idx[bert_start_idx]
-        orig_end_idx = self.bert_to_spaced_orig_idx[bert_end_idx - 1]
+        orig_end_idx = self.bert_to_spaced_orig_idx[bert_exclusive_end_idx - 1]
         return " ".join(self.spaced_orig_tokens[orig_start_idx : orig_end_idx + 1])
 
 
@@ -222,29 +224,32 @@ class TestTweetDataset(_TweetDataset):
     pass
 
 
-Prediction = namedtuple("Prediction", ["start_idx", "end_idx", "max_logit_sum"])
+# TODO: change this to be non-exclusive later
+Prediction = namedtuple("Prediction", ["start_idx", "exclusive_end_idx", "max_logit_sum"])
 
 
-# TODO: test this and stuff
-def ls_find_start_end(b, threshold):
+def ls_find_start_end(raw_logits: torch.Tensor, mask: torch.Tensor, threshold: float):
     # TODO: TODO: prevent padding from being a possible idx
-    a = b - threshold
-    max_so_far = a[0]
-    cur_max = a[0]
+    logits = raw_logits - threshold
+    max_so_far = logits[0]
+    cur_max = logits[0]
     start_idx = 0
     max_start_idx, max_end_idx = 0, 0
-    for i in range(1, len(a)):
-        if a[i] > cur_max + a[i]:
-            cur_max = a[i]
+    num_tokens_including_cls_and_seq = int(mask.sum())
+    for i in range(1, num_tokens_including_cls_and_seq - 1):  # do this to exclude seq at the end
+        if logits[i] > cur_max + logits[i]:
+            cur_max = logits[i]
             start_idx = i
         else:
-            cur_max = cur_max + a[i]
+            cur_max = cur_max + logits[i]
         if max_so_far < cur_max:
             max_so_far = cur_max
             max_start_idx = start_idx
             max_end_idx = i + 1
 
-    return Prediction(start_idx=max_start_idx, end_idx=max_end_idx, max_logit_sum=max_so_far)
+    return Prediction(
+        start_idx=max_start_idx, exclusive_end_idx=max_end_idx, max_logit_sum=max_so_far
+    )
 
 
 def differentiable_log_jaccard(logits: torch.Tensor, actual: torch.Tensor) -> torch.Tensor:
@@ -396,16 +401,18 @@ class ModelPipeline:
                 )
             prediction_vectors = torch.sigmoid(logits)
             preds = [
-                ls_find_start_end(prediction_vector, self.prediction_threshold)
-                for prediction_vector in prediction_vectors
+                ls_find_start_end(prediction_vector, input_id_mask, self.prediction_threshold)
+                for prediction_vector, input_id_mask in zip(prediction_vectors, batch.input_id_mask)
             ]
             for idx, pred in zip(batch.idx, preds):
                 tokenized_string = dataset.tokenized_strings[int(idx)]
                 pred_start_idx = max(pred.start_idx, 1)
-                pred_end_idx = min(pred.end_idx, len(tokenized_string.bert_tokens) + 1)
+                # TODO: is this cool??^^ What if I just started from idx 1 in the ls_find_start_end..then I wouldn't have to do -1
+
                 #  -1 offset since we're ignoring the [CLS] token at the beginning
+                # TODO: could just have ls_find_start_end ignore [CLS]
                 predicted_selected_text = tokenized_string.make_orig_substring_from_bert_idxes(
-                    pred_start_idx - 1, pred_end_idx - 1,
+                    pred_start_idx - 1, pred.exclusive_end_idx - 1,
                 )
                 predicted_selected_texts.append(predicted_selected_text)
         return predicted_selected_texts
@@ -423,7 +430,6 @@ class ModelPipeline:
 
 
 def main():
-    # TODO: I'm sometimes getting index out of bound errors?? uh oh!!1 (maybe should change the random seed around to repro)
     # TODO: need to have an example of a row that would raise an assertionerror and be filtered out
     torch.manual_seed(RANDOM_SEED)
     BERT_MODEL_TYPE = "bert-base-cased"
@@ -449,22 +455,15 @@ def main():
         prediction_threshold=threshold,
     )
     pipeline.fit(train_data_loader, 1)
-    # TODO: TODO: WHY DOES IT THROW LIST IDX OUT OF RANGE IF I RUN THIS TWICE??
-    # pipeline.pred_selected_text(train_dataset)
-    # actual_selected_texts = train_dataset.selected_text
-    # print(pipeline.jaccard_scores(train_dataset, actual_selected_texts))
+    pipeline.pred_selected_text(train_dataset)
+    actual_selected_texts = train_dataset.selected_text
+    print(pipeline.jaccard_scores(train_dataset, actual_selected_texts))
 
     test_df = pd.DataFrame(
         {"text": ["hi worldd", "hello moon"], "sentiment": ["neutral", "positive"]}
     )
     test_dataset = TestTweetDataset(test_df, bert_tokenizer_)
-    from copy import deepcopy
-
-    # unchanged_dataset = deepcopy(test_dataset)
-    # assert test_dataset == test_dataset
-    pipeline.pred_selected_text(test_dataset)
-    pipeline.pred_selected_text(test_dataset)
-    pass
+    print(pipeline.pred_selected_text(test_dataset))
 
 
 if __name__ == "__main__":
