@@ -221,7 +221,9 @@ class TestFindStartEnd(unittest.TestCase):
 
         # note the max_logit_sum. That means that the last value was NOT included in the range.
         # this is because we assume the last token (with mask = 1) to be the [SEQ] token which we don't include
-        expected_pred = Prediction(start_idx=0, end_idx=4, max_logit_sum=torch.tensor(0.8))
+        expected_pred = Prediction(
+            start_idx=0, exclusive_end_idx=4, max_logit_sum=torch.tensor(0.8)
+        )
         self.assertEqual(expected_pred, pred)
 
     def test_last_is_masked(self):
@@ -231,7 +233,9 @@ class TestFindStartEnd(unittest.TestCase):
 
         pred = ls_find_start_end(raw_logits, mask, threshold)
 
-        expected_pred = Prediction(start_idx=0, end_idx=3, max_logit_sum=torch.tensor(0.6))
+        expected_pred = Prediction(
+            start_idx=0, exclusive_end_idx=3, max_logit_sum=torch.tensor(0.6)
+        )
         self.assertEqual(expected_pred, pred)
 
 
@@ -246,10 +250,10 @@ class TestTestTweetDataset(TweetTestCase):
         )
         dataset = TestTweetDataset(df, self.bert_tokenizer)
         expected_item_0 = TestData(
-            idxes=0,
-            all_bert_input_ids=tensor([101, 19082, 1362, 1181, 102]),
-            masks=tensor([1, 1, 1, 1, 1]),
-            sentiments=tensor(2),
+            idx=0,
+            input_id_list=tensor([101, 19082, 1362, 1181, 102]),
+            input_id_mask=tensor([1, 1, 1, 1, 1]),
+            sentiment=tensor(2),
         )
         self.assertDatasetItemEqual(expected_item_0, dataset[0])
         self.assertDatasetItemInList(expected_item_0, list(dataset))
@@ -267,13 +271,13 @@ class TestTrainTweetDataset(TweetTestCase):
         dataset = TrainTweetDataset(df, self.bert_tokenizer)
 
         expected_item_0 = TrainData(
-            idxes=0,
-            bert_input_id_list=tensor([101, 19082, 1362, 1181, 102]),
-            masks=tensor([1, 1, 1, 1, 1]),
-            sentiments=tensor(2),
+            idx=0,
+            input_id_list=tensor([101, 19082, 1362, 1181, 102]),
+            input_id_mask=tensor([1, 1, 1, 1, 1]),
+            sentiment=tensor(2),
             selected_ids_start_end_idx=tensor([2, 4]),
             selected_text="worldd",
-            selected_ids=tensor([0.0, 0.0, 1.0, 1.0, 0.0]),
+            input_id_is_selected=tensor([0.0, 0.0, 1.0, 1.0, 0.0]),
         )
         self.assertListEqual([], dataset.error_indexes)
         self.assertDatasetItemEqual(expected_item_0, dataset[0])

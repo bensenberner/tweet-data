@@ -166,7 +166,7 @@ class TrainData(NamedTuple):
     input_id_mask: torch.Tensor
     sentiment: torch.Tensor
     selected_ids_start_end_idx: torch.Tensor
-    selected_text: torch.Tensor
+    selected_text: str
     input_id_is_selected: torch.Tensor
 
 
@@ -225,8 +225,10 @@ class TestTweetDataset(_TweetDataset):
     pass
 
 
-# TODO: change this to be non-exclusive later
-Prediction = namedtuple("Prediction", ["start_idx", "exclusive_end_idx", "max_logit_sum"])
+class Prediction(NamedTuple):
+    start_idx: int
+    exclusive_end_idx: int  # TODO: change this to be non-exclusive later
+    max_logit_sum: torch.Tensor
 
 
 def ls_find_start_end(raw_logits: torch.Tensor, mask: torch.Tensor, threshold: float):
