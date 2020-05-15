@@ -120,7 +120,7 @@ class LabelData:
 TestData = namedtuple("TestData", ["idxes", "all_bert_input_ids", "masks", "sentiments"])
 
 
-# not meant to be directly instantiated in order to avoid confusion
+# not meant to be directly instantiated in order to avoid confusion regarding subclassing
 class _TweetDataset(data.Dataset):
     SENTIMENT_MAP = {"negative": 0, "positive": 1, "neutral": 2}
 
@@ -218,10 +218,6 @@ class TrainTweetDataset(_TweetDataset):
 
 
 class TestTweetDataset(_TweetDataset):
-    pass
-
-
-def create_train_test_datasets() -> Tuple[_TweetDataset]:
     pass
 
 
