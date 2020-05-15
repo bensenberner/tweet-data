@@ -365,6 +365,7 @@ def jaccard(str1, str2, debug=False):
 
 
 if __name__ == "__main__":
+    KAGGLE_PATH = "/kaggle/input/tweet-sentiment-extraction/train.csv"
     torch.manual_seed(RANDOM_SEED)
     train_df = load_cleaned_df()
     bert_tokenizer = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)

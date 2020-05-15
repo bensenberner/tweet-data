@@ -1,5 +1,5 @@
 from collections import namedtuple
-from typing import List, Tuple, Iterable, Optional, Callable
+from typing import List, Tuple, Iterable, Optional, Callable, NamedTuple
 
 import pandas as pd
 import torch
@@ -12,7 +12,7 @@ from torch.utils import data
 from torch.utils.data import DataLoader
 from tqdm.notebook import tqdm
 
-from utils import RANDOM_SEED
+RANDOM_SEED = 42
 
 
 def in_notebook():
@@ -120,7 +120,11 @@ class LabelData:
         return -1, -1
 
 
-TestData = namedtuple("TestData", ["idx", "input_id_list", "input_id_mask", "sentiment"])
+class TestData(NamedTuple):
+    idx: int
+    input_id_list: torch.Tensor
+    input_id_mask: torch.Tensor
+    sentiment: torch.Tensor
 
 
 # not meant to be directly instantiated in order to avoid confusion regarding subclassing
@@ -156,19 +160,14 @@ class _TweetDataset(data.Dataset):
         )
 
 
-# TODO: some sort of subclassing ?? Can namedtuples use inheritance??
-TrainData = namedtuple(
-    "TrainData",
-    [
-        "idx",
-        "input_id_list",
-        "input_id_mask",
-        "sentiment",
-        "selected_ids_start_end_idx",
-        "selected_text",
-        "input_id_is_selected",  # a list of booleans of len (input_id_list) indicating whether that input id is selected
-    ],
-)
+class TrainData(NamedTuple):
+    idx: int
+    input_id_list: torch.Tensor
+    input_id_mask: torch.Tensor
+    sentiment: torch.Tensor
+    selected_ids_start_end_idx: torch.Tensor
+    selected_text: torch.Tensor
+    input_id_is_selected: torch.Tensor
 
 
 class TrainTweetDataset(_TweetDataset):
@@ -364,7 +363,9 @@ class ModelPipeline:
             train_data.sentiment.to(self.dev),
         )
         loss_fn = self.selected_id_loss_fn
-        return loss_fn(selected_logits.view(batch_size, -1), train_data.input_id_is_selected)
+        return loss_fn(
+            selected_logits.view(batch_size, -1), train_data.input_id_is_selected.to(self.dev)
+        )
 
     def _update_weights(self, loss) -> None:
         self.optim.zero_grad()
@@ -446,8 +447,7 @@ def main():
     )
     train_dataset = TrainTweetDataset(train_df_, bert_tokenizer_)
     train_data_loader = data.DataLoader(train_dataset, batch_size=1, shuffle=False)
-
-    dev = "cpu"
+    dev = "cuda:0" if torch.cuda.is_available() else "cpu"
     # TODO: make this trainable
     threshold = 0.6
     pipeline = ModelPipeline(
