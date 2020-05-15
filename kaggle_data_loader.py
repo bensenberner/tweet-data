@@ -392,7 +392,7 @@ class ModelPipeline:
             secondary_bar.close()
         return losses
 
-    def pred_selected_text(self, dataset: _TweetDataset, batch_size=128):
+    def pred_selected_text(self, dataset: _TweetDataset, batch_size=128) -> List[str]:
         predicted_selected_texts = []
         # TODO: do I really need a dataloader for doing prediction?
         data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
