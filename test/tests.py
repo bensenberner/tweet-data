@@ -7,7 +7,14 @@ import torch
 import transformers
 from torch import tensor, Tensor
 
-from kaggle_data_loader import LabelData, TokenizedText, TestTweetDataset
+from kaggle_data_loader import (
+    LabelData,
+    TokenizedText,
+    TestTweetDataset,
+    TrainTweetDataset,
+    TrainData,
+    TestData,
+)
 
 BERT_MODEL_TYPE = "bert-base-cased"
 Pandas = namedtuple("Pandas", ["Index", "text", "selected_text"])
@@ -160,15 +167,13 @@ class TestLabelData(TweetTestCase):
             LabelData(self.bert_tokenizer, row)
 
     def test_find_cannot_go_off_the_end_a_bit(self):
-        # TODO: this is not the behavior we want!!
         text = "Sooo SAD I will miss"
         selected_text = "miss you"
         row = Pandas(Index=0, text=text, selected_text=selected_text)
-
-        label = LabelData(self.bert_tokenizer, row)
-        self.assertEqual(6, label.bert_text_start_idx)
-        self.assertEqual(8, label.bert_text_end_idx)  # off by TWO!
-        self.assertEqual([0, 0, 0, 0, 0, 0, 1], label.label)
+        with self.assertRaisesRegex(
+            AssertionError, f"Could not find '{selected_text}' in '{text}'"
+        ):
+            LabelData(self.bert_tokenizer, row)
 
     def test_find_cannot_go_off_the_end_too_far(self):
         text = "Sooo SAD I will miss"
@@ -216,11 +221,36 @@ class TestTestTweetDataset(DatasetTestCase):
             }
         )
         dataset = TestTweetDataset(df, transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE))
-        expected_item_0 = (
-            0,
-            tensor([101, 19082, 1362, 1181, 102]),
-            tensor([1, 1, 1, 1, 1]),
-            tensor(2),
+        expected_item_0 = TestData(
+            idxes=0,
+            all_bert_input_ids=tensor([101, 19082, 1362, 1181, 102]),
+            masks=tensor([1, 1, 1, 1, 1]),
+            sentiments=tensor(2),
+        )
+        self.assertListEqual([], dataset.error_indexes)
+        self.assertDatasetItemEqual(expected_item_0, dataset[0])
+        self.assertDatasetItemInList(expected_item_0, list(dataset))
+
+
+class TestTrainTweetDataset(DatasetTestCase):
+    def test_normal_data(self):
+        df = pd.DataFrame(
+            {
+                "text": ["hello worldd", "hi moon"],
+                "selected_text": ["worldd", "hi moon"],
+                "sentiment": ["neutral", "positive"],
+            }
+        )
+        dataset = TrainTweetDataset(df, transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE))
+
+        expected_item_0 = TrainData(
+            idxes=0,
+            bert_input_id_list=tensor([101, 19082, 1362, 1181, 102]),
+            masks=tensor([1, 1, 1, 1, 1]),
+            sentiments=tensor(2),
+            selected_ids_start_end_idx=tensor([2, 4]),
+            selected_text="worldd",
+            selected_ids=tensor([0.0, 0.0, 1.0, 1.0, 0.0]),
         )
         self.assertListEqual([], dataset.error_indexes)
         self.assertDatasetItemEqual(expected_item_0, dataset[0])

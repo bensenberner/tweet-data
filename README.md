@@ -6,3 +6,4 @@
 - try out using PyTorch Lightning for better code quality?
 - Why does pred_selected_text throw an error if I run it twice on the same data?
 - change the end_idx everywhere to be an actual index not an exclusive index
+- make threshold trainable

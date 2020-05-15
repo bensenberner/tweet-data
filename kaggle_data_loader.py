@@ -19,7 +19,8 @@ def in_notebook():
     try:
         from IPython import get_ipython
 
-        if "IPKernelApp" not in get_ipython().config:  # pragma: no cover
+        instance = get_ipython()
+        if not instance or "IPKernelApp" not in instance.config:  # pragma: no cover
             return False
     except ImportError:
         return False
@@ -117,7 +118,7 @@ class LabelData:
         return -1, -1
 
 
-TestData = namedtuple("TestData", ["idxes", "all_bert_input_ids", "masks", "sentiments"])
+TestData = namedtuple("TestData", ["idx", "input_id_list", "input_id_mask", "sentiment"])
 
 
 # not meant to be directly instantiated in order to avoid confusion regarding subclassing
@@ -139,21 +140,21 @@ class _TweetDataset(data.Dataset):
                 self.error_indexes.append(row.Index)
         df_filtered = df.drop(self.error_indexes)
         # this is X, the input matrix we will feed into the model.
-        self.all_bert_input_ids: torch.Tensor = pad_sequence(
+        self.bert_input_id_lists: torch.Tensor = pad_sequence(
             [torch.tensor(e) for e in bert_input_ids_unpadded], batch_first=True
         )
-        self.bert_attention_masks = torch.min(self.all_bert_input_ids, torch.tensor(1)).detach()
+        self.bert_attention_masks = torch.min(self.bert_input_id_lists, torch.tensor(1)).detach()
         self.sentiments = torch.tensor(list(df_filtered["sentiment"].apply(self.SENTIMENT_MAP.get)))
 
     def __len__(self):
-        return len(self.all_bert_input_ids)
+        return len(self.bert_input_id_lists)
 
     def __getitem__(self, idx):
         return TestData(
-            self.indexes[idx],
-            self.all_bert_input_ids[idx],
-            self.bert_attention_masks[idx],
-            self.sentiments[idx],
+            idx=self.indexes[idx],
+            input_id_list=self.bert_input_id_lists[idx],
+            input_id_mask=self.bert_attention_masks[idx],
+            sentiment=self.sentiments[idx],
         )
 
 
@@ -161,13 +162,13 @@ class _TweetDataset(data.Dataset):
 TrainData = namedtuple(
     "TrainData",
     [
-        "idxes",
-        "all_bert_input_ids",
-        "masks",
-        "sentiments",
+        "idx",
+        "input_id_list",
+        "input_id_mask",
+        "sentiment",
         "selected_ids_start_end_idx",
         "selected_text",
-        "selected_ids",
+        "input_id_is_selected",  # a list of booleans of len (input_id_list) indicating whether that input id is selected
     ],
 )
 
@@ -185,7 +186,7 @@ class TrainTweetDataset(_TweetDataset):
 
         for row in df_with_selected_texts.itertuples():
             label_data = LabelData(bert_tokenizer, row)
-            # TODO: TODO: couldn't I just get LabelData??
+            # TODO: TODO: couldn't I just get LabelData?
             selected_ids_start_end_idx_raw.append(
                 # TODO: make sure that end_idx is always exclusive
                 (label_data.bert_text_start_idx, label_data.bert_text_end_idx)
@@ -207,13 +208,13 @@ class TrainTweetDataset(_TweetDataset):
 
     def __getitem__(self, idx):
         return TrainData(
-            self.indexes[idx],
-            self.all_bert_input_ids[idx],
-            self.bert_attention_masks[idx],
-            self.sentiments[idx],
-            self.selected_ids_start_end[idx],
-            self.selected_text[idx],  # TODO: am I sure I need this?
-            self.selected_ids[idx],
+            idx=self.indexes[idx],
+            input_id_list=self.bert_input_id_lists[idx],
+            input_id_mask=self.bert_attention_masks[idx],
+            sentiment=self.sentiments[idx],
+            selected_ids_start_end_idx=self.selected_ids_start_end[idx],
+            selected_text=self.selected_text[idx],  # TODO: am I sure I need this?
+            input_id_is_selected=self.selected_ids[idx],
         )
 
 
@@ -347,14 +348,14 @@ class ModelPipeline:
         self.prediction_threshold = prediction_threshold
 
     def _get_loss(self, train_data: TrainData) -> torch.Tensor:
-        batch_size = train_data.all_bert_input_ids.shape[0]
+        batch_size = train_data.input_id_list.shape[0]
         selected_logits = self.model(
-            train_data.all_bert_input_ids.to(self.dev),
-            train_data.masks.to(self.dev),
-            train_data.sentiments.to(self.dev),
+            train_data.input_id_list.to(self.dev),
+            train_data.input_id_mask.to(self.dev),
+            train_data.sentiment.to(self.dev),
         )
         loss_fn = self.selected_id_loss_fn
-        return loss_fn(selected_logits.view(batch_size, -1), train_data.selected_ids)
+        return loss_fn(selected_logits.view(batch_size, -1), train_data.input_id_is_selected)
 
     def _update_weights(self, loss) -> None:
         self.optim.zero_grad()
@@ -386,19 +387,19 @@ class ModelPipeline:
         predicted_selected_texts = []
         # TODO: do I really need a dataloader for doing prediction?
         data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
-        for data_row in data_loader:
+        for batch in data_loader:
             with torch.no_grad():
                 logits = self.model(
-                    data_row.all_bert_input_ids.to(self.dev),
-                    data_row.masks.to(self.dev),
-                    data_row.sentiments.to(self.dev),
+                    batch.input_id_list.to(self.dev),
+                    batch.input_id_mask.to(self.dev),
+                    batch.sentiment.to(self.dev),
                 )
             prediction_vectors = torch.sigmoid(logits)
             preds = [
                 ls_find_start_end(prediction_vector, self.prediction_threshold)
                 for prediction_vector in prediction_vectors
             ]
-            for idx, pred in zip(data_row.idxes, preds):
+            for idx, pred in zip(batch.idx, preds):
                 tokenized_string = dataset.tokenized_strings[int(idx)]
                 pred_start_idx = max(pred.start_idx, 1)
                 pred_end_idx = min(pred.end_idx, len(tokenized_string.bert_tokens) + 1)
@@ -438,6 +439,7 @@ def main():
     train_data_loader = data.DataLoader(train_dataset, batch_size=1, shuffle=False)
 
     dev = "cpu"
+    # TODO: make this trainable
     threshold = 0.6
     pipeline = ModelPipeline(
         dev=dev,
@@ -456,7 +458,13 @@ def main():
         {"text": ["hi worldd", "hello moon"], "sentiment": ["neutral", "positive"]}
     )
     test_dataset = TestTweetDataset(test_df, bert_tokenizer_)
-    print(pipeline.pred_selected_text(test_dataset))
+    from copy import deepcopy
+
+    # unchanged_dataset = deepcopy(test_dataset)
+    # assert test_dataset == test_dataset
+    pipeline.pred_selected_text(test_dataset)
+    pipeline.pred_selected_text(test_dataset)
+    pass
 
 
 if __name__ == "__main__":
