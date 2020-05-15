@@ -1,4 +1,3 @@
-from collections import namedtuple
 from typing import List, Tuple, Iterable, Optional, Callable, NamedTuple
 
 import pandas as pd
@@ -51,7 +50,7 @@ class TokenizedText:
         return str(self.bert_tokens)
 
     def make_orig_substring_from_bert_idxes(
-        self, bert_start_idx: int, bert_exclusive_end_idx: int
+        self, bert_start_idx: int, bert_inclusive_end_idx: int
     ) -> str:
         """
         Given a start and end index from the bert token list, this will create
@@ -59,31 +58,26 @@ class TokenizedText:
         that start and end bert index range.
 
         :param bert_start_idx: start index from the bert token list
-        :param bert_exclusive_end_idx: end index from the bert token list. CURRENTLY exclusive TODO: fix this?
+        :param bert_inclusive_end_idx: end index from the bert token list
         """
         orig_start_idx = self.bert_to_spaced_orig_idx[bert_start_idx]
-        orig_end_idx = self.bert_to_spaced_orig_idx[bert_exclusive_end_idx - 1]
+        orig_end_idx = self.bert_to_spaced_orig_idx[bert_inclusive_end_idx]
         return " ".join(self.spaced_orig_tokens[orig_start_idx : orig_end_idx + 1])
 
 
-class LabelData:
-    def __init__(self, bert_tokenizer, row):
-        """
-        self.start_idx: the index within the bert-tokenized row.text in which the row.selected_text first appears
-        self.end_idx: the index within the bert-tokenized row.text in which the row.selected_text last appears
-            NOTE that these this range defined by these indexes might be a little too wide in order to make sure the full
-            selected text was captured.
-        """
-        text_bert_toks = bert_tokenizer.tokenize(row.text)
-        sel_text_bert_toks = bert_tokenizer.tokenize(row.selected_text)
-        self.bert_text_start_idx, self.bert_text_end_idx = self.find(
-            text_bert_toks, sel_text_bert_toks
-        )
-        if self.bert_text_start_idx == -1:
+class LabelMaker:
+    def __init__(self, bert_tokenizer):
+        self.bert_tokenizer = bert_tokenizer
+
+    def make(self, row) -> List[int]:
+        text_bert_toks = self.bert_tokenizer.tokenize(row.text)
+        sel_text_bert_toks = self.bert_tokenizer.tokenize(row.selected_text)
+        bert_text_start_idx, bert_text_end_idx = self._find(text_bert_toks, sel_text_bert_toks)
+        if bert_text_start_idx == -1:
             # this happens 372 times in version as of this commit for all of train.csv
             raise AssertionError(f"Could not find '{row.selected_text}' in '{row.text}'")
-        self.label = [
-            1 if self.bert_text_start_idx <= idx < self.bert_text_end_idx else 0
+        return [
+            1 if bert_text_start_idx <= idx <= bert_text_end_idx else 0
             for idx in range(len(text_bert_toks))
         ]
 
@@ -97,7 +91,7 @@ class LabelData:
             haystack[hs_idx + 1 : hs_idx + len(needle)] == needle[1:]
         )
 
-    def find(self, haystack: List[str], needle: List[str]) -> Tuple[int, int]:
+    def _find(self, haystack: List[str], needle: List[str]) -> Tuple[int, int]:
         """
         :param haystack: list in which `needle` is being looked for
         :param needle: we are trying to find the indexes in which `needle` is located in `haystack`
@@ -115,7 +109,7 @@ class LabelData:
                     if self._is_needle_at_haystack_idx(haystack, hs_idx, sub_needle):
                         return (
                             hs_idx - start_offset,
-                            hs_idx - start_offset + len(needle),
+                            hs_idx - start_offset + len(needle) - 1,
                         )
         return -1, -1
 
@@ -165,30 +159,19 @@ class TrainData(NamedTuple):
     input_id_list: torch.Tensor
     input_id_mask: torch.Tensor
     sentiment: torch.Tensor
-    selected_ids_start_end_idx: torch.Tensor
-    selected_text: str
     input_id_is_selected: torch.Tensor
 
 
 class TrainTweetDataset(_TweetDataset):
     def __init__(self, df_with_selected_texts: pd.DataFrame, bert_tokenizer):
-        selected_ids_start_end_idx_raw = []
         # each label is a list of 1s and 0s, representing whether the corresponding bert token
         # was contained in the selected text or not
         labels: List[List[int]] = []
-        # TODO: this is literally just a series from the original db...why am I doing this
-        self.selected_text = []
         self.error_indexes = []
+        label_maker = LabelMaker(bert_tokenizer)
         for row in df_with_selected_texts.itertuples():
             try:
-                label_data = LabelData(bert_tokenizer, row)
-                # TODO: TODO: couldn't I just get LabelData?
-                selected_ids_start_end_idx_raw.append(
-                    # TODO: make sure that end_idx is always exclusive
-                    (label_data.bert_text_start_idx, label_data.bert_text_end_idx)
-                )
-                labels.append(label_data.label)
-                self.selected_text.append(row.selected_text)
+                labels.append(label_maker.make(row))
             except AssertionError:
                 self.error_indexes.append(row.Index)
         df_filtered = df_with_selected_texts.drop(self.error_indexes)
@@ -201,13 +184,6 @@ class TrainTweetDataset(_TweetDataset):
         self.selected_ids = pad_sequence(
             [torch.tensor([0] + label + [0]) for label in labels], batch_first=True
         ).float()  # Float for BCELoss
-        # TODO^^ if we aren't using BCE loss do we still need this?
-
-        # TODO: rename this somehow
-        # Offset by one for [CLS]
-        self.selected_ids_start_end = torch.tensor(
-            [(start_idx + 1, end_idx + 1) for start_idx, end_idx in selected_ids_start_end_idx_raw]
-        )
 
     def __getitem__(self, idx):
         return TrainData(
@@ -215,8 +191,6 @@ class TrainTweetDataset(_TweetDataset):
             input_id_list=self.bert_input_id_lists[idx],
             input_id_mask=self.bert_attention_masks[idx],
             sentiment=self.sentiments[idx],
-            selected_ids_start_end_idx=self.selected_ids_start_end[idx],
-            selected_text=self.selected_text[idx],  # TODO: am I sure I need this?
             input_id_is_selected=self.selected_ids[idx],
         )
 
@@ -227,12 +201,11 @@ class TestTweetDataset(_TweetDataset):
 
 class Prediction(NamedTuple):
     start_idx: int
-    exclusive_end_idx: int  # TODO: change this to be non-exclusive later
+    inclusive_end_idx: int
     max_logit_sum: torch.Tensor
 
 
 def ls_find_start_end(raw_logits: torch.Tensor, mask: torch.Tensor, threshold: float):
-    # TODO: TODO: prevent padding from being a possible idx
     logits = raw_logits - threshold
     max_so_far = logits[0]
     cur_max = logits[0]
@@ -248,10 +221,10 @@ def ls_find_start_end(raw_logits: torch.Tensor, mask: torch.Tensor, threshold: f
         if max_so_far < cur_max:
             max_so_far = cur_max
             max_start_idx = start_idx
-            max_end_idx = i + 1
+            max_end_idx = i
 
     return Prediction(
-        start_idx=max_start_idx, exclusive_end_idx=max_end_idx, max_logit_sum=max_so_far
+        start_idx=max_start_idx, inclusive_end_idx=max_end_idx, max_logit_sum=max_so_far
     )
 
 
@@ -414,12 +387,10 @@ class ModelPipeline:
             for idx, pred in zip(batch.idx, preds):
                 tokenized_string = dataset.tokenized_strings[int(idx)]
                 pred_start_idx = max(pred.start_idx, 1)
-                # TODO: is this cool??^^ What if I just started from idx 1 in the ls_find_start_end..then I wouldn't have to do -1
 
                 #  -1 offset since we're ignoring the [CLS] token at the beginning
-                # TODO: could just have ls_find_start_end ignore [CLS]
                 predicted_selected_text = tokenized_string.make_orig_substring_from_bert_idxes(
-                    pred_start_idx - 1, pred.exclusive_end_idx - 1,
+                    pred_start_idx - 1, pred.inclusive_end_idx - 1,
                 )
                 predicted_selected_texts.append(predicted_selected_text)
         return predicted_selected_texts
@@ -461,7 +432,9 @@ def main():
     )
     pipeline.fit(train_data_loader, 1)
     pipeline.pred_selected_text(train_dataset)
-    actual_selected_texts = train_dataset.selected_text
+    actual_selected_texts = train_df_.loc[set(train_df_.index) - set(train_dataset.error_indexes)][
+        "selected_text"
+    ]
     print(pipeline.jaccard_scores(train_dataset, actual_selected_texts))
 
     test_df = pd.DataFrame(

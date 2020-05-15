@@ -8,7 +8,7 @@ import transformers
 from torch import tensor, Tensor
 
 from kaggle_data_loader import (
-    LabelData,
+    LabelMaker,
     TokenizedText,
     TestTweetDataset,
     TrainTweetDataset,
@@ -66,9 +66,7 @@ class TestTokenizedText(TweetTestCase):
             ["oh", ",", "da", "##ng", "##g"], self.bert_tokenizer.tokenize(sample_text)
         )
         tokenized_text = TokenizedText(self.bert_tokenizer, sample_text)
-        substring = tokenized_text.make_orig_substring_from_bert_idxes(
-            0, 2
-        )  # TODO: end is EXCLUSIVE for now. Want to change this to inclusive
+        substring = tokenized_text.make_orig_substring_from_bert_idxes(0, 1)
 
         self.assertEqual("oh,", substring)
 
@@ -90,11 +88,8 @@ class TestLabelData(TweetTestCase):
         )
         row = Pandas(Index=0, text=text, selected_text=selected_text)
 
-        label = LabelData(self.bert_tokenizer, row)
-        # TODO: fix this end_idx thing being not an actual idx
-        self.assertEqual(0, label.bert_text_start_idx)
-        self.assertEqual(4, label.bert_text_end_idx)
-        self.assertEqual([1, 1, 1, 1, 0, 0, 0], label.label)
+        label = LabelMaker(self.bert_tokenizer).make(row)
+        self.assertEqual([1, 1, 1, 1, 0, 0, 0], label)
 
     def test_handle_unk_token(self):
         text = "helllllllllllllllllllllllloooooooooooooooooooooooooooooooooooooooooooooooooooooooolllllllllllllllllllllllo worldd"
@@ -102,21 +97,17 @@ class TestLabelData(TweetTestCase):
         row = Pandas(Index=0, text=text, selected_text=selected_text)
         self.assertEqual(["[UNK]", "world", "##d"], self.bert_tokenizer.tokenize(text))
 
-        label = LabelData(self.bert_tokenizer, row)
-        self.assertEqual(1, label.bert_text_start_idx)
-        self.assertEqual(3, label.bert_text_end_idx)  # exclusive end_idx
-        self.assertListEqual([0, 1, 1], label.label)
+        label = LabelMaker(self.bert_tokenizer).make(row)
+        self.assertListEqual([0, 1, 1], label)
 
     def test_find_truncated_beginning(self):
         text = "Sooo SAD I will miss"
         selected_text = "oo SAD"
         row = Pandas(Index=0, text=text, selected_text=selected_text)
 
-        label = LabelData(self.bert_tokenizer, row)
+        label = LabelMaker(self.bert_tokenizer).make(row)
 
-        self.assertEqual(0, label.bert_text_start_idx)
-        self.assertEqual(4, label.bert_text_end_idx)
-        self.assertEqual([1, 1, 1, 1, 0, 0, 0], label.label)
+        self.assertEqual([1, 1, 1, 1, 0, 0, 0], label)
 
     def test_find_truncated_end_that_splits_into_clean_bert_tokens(self):
         text = "Sooo SAD I will miss"
@@ -129,22 +120,18 @@ class TestLabelData(TweetTestCase):
 
         row = Pandas(Index=0, text=text, selected_text=selected_text)
 
-        label = LabelData(self.bert_tokenizer, row)
+        label = LabelMaker(self.bert_tokenizer).make(row)
         # notice this is DIFFERENT than usual!
-        self.assertEqual(0, label.bert_text_start_idx)
-        self.assertEqual(3, label.bert_text_end_idx)
-        self.assertEqual([1, 1, 1, 0, 0, 0, 0], label.label)
+        self.assertEqual([1, 1, 1, 0, 0, 0, 0], label)
 
     def test_find_can_handle_single_truncated_if_it_splits_it_into_a_bert_token(self):
         text = "Sooo SAD I will miss"
         selected_text = "SA"
         row = Pandas(Index=0, text=text, selected_text=selected_text)
 
-        label = LabelData(self.bert_tokenizer, row)
+        label = LabelMaker(self.bert_tokenizer).make(row)
 
-        self.assertEqual(2, label.bert_text_start_idx)
-        self.assertEqual(3, label.bert_text_end_idx)
-        self.assertEqual([0, 0, 1, 0, 0, 0, 0], label.label)
+        self.assertEqual([0, 0, 1, 0, 0, 0, 0], label)
 
     def test_find_truncated_both_ends(self):
         text = "Sooo SAD I will miss"
@@ -153,7 +140,7 @@ class TestLabelData(TweetTestCase):
         with self.assertRaisesRegex(
             AssertionError, f"Could not find '{selected_text}' in '{text}'"
         ):
-            LabelData(self.bert_tokenizer, row)
+            LabelMaker(self.bert_tokenizer).make(row)
 
     def test_find_middle_malformed(self):
         text = "Sooo SAD I will miss"
@@ -162,7 +149,7 @@ class TestLabelData(TweetTestCase):
         with self.assertRaisesRegex(
             AssertionError, f"Could not find '{selected_text}' in '{text}'"
         ):
-            LabelData(self.bert_tokenizer, row)
+            LabelMaker(self.bert_tokenizer).make(row)
 
     def test_cannot_find_random(self):
         text = "Sooo SAD I will miss"
@@ -171,7 +158,7 @@ class TestLabelData(TweetTestCase):
         with self.assertRaisesRegex(
             AssertionError, f"Could not find '{selected_text}' in '{text}'"
         ):
-            LabelData(self.bert_tokenizer, row)
+            LabelMaker(self.bert_tokenizer).make(row)
 
     def test_find_cannot_handle_single_truncated_into_non_matching_bert_token(self):
         text = "Sooo SAD I will miss"
@@ -180,7 +167,7 @@ class TestLabelData(TweetTestCase):
         with self.assertRaisesRegex(
             AssertionError, f"Could not find '{selected_text}' in '{text}'"
         ):
-            LabelData(self.bert_tokenizer, row)
+            LabelMaker(self.bert_tokenizer).make(row)
 
     def test_find_cannot_go_off_beginning_a_bit(self):
         text = "Sooo SAD I will miss"
@@ -189,7 +176,7 @@ class TestLabelData(TweetTestCase):
         with self.assertRaisesRegex(
             AssertionError, f"Could not find '{selected_text}' in '{text}'"
         ):
-            LabelData(self.bert_tokenizer, row)
+            LabelMaker(self.bert_tokenizer).make(row)
 
     def test_find_cannot_go_off_the_end_a_bit(self):
         text = "Sooo SAD I will miss"
@@ -198,9 +185,10 @@ class TestLabelData(TweetTestCase):
         with self.assertRaisesRegex(
             AssertionError, f"Could not find '{selected_text}' in '{text}'"
         ):
-            LabelData(self.bert_tokenizer, row)
+            LabelMaker(self.bert_tokenizer).make(row)
 
     def test_find_cannot_go_off_the_end_too_far(self):
+        # this has been failing for a while. Maybe its okay. Up for discussion
         text = "Sooo SAD I will miss"
         selected_text = "miss you man"
         row = Pandas(Index=0, text=text, selected_text=selected_text)
@@ -208,7 +196,7 @@ class TestLabelData(TweetTestCase):
         with self.assertRaisesRegex(
             AssertionError, f"Could not find '{selected_text}' in '{text}'"
         ):
-            LabelData(self.bert_tokenizer, row)
+            LabelMaker(self.bert_tokenizer).make(row)
 
 
 class TestFindStartEnd(unittest.TestCase):
@@ -222,7 +210,7 @@ class TestFindStartEnd(unittest.TestCase):
         # note the max_logit_sum. That means that the last value was NOT included in the range.
         # this is because we assume the last token (with mask = 1) to be the [SEQ] token which we don't include
         expected_pred = Prediction(
-            start_idx=0, exclusive_end_idx=4, max_logit_sum=torch.tensor(0.8)
+            start_idx=0, inclusive_end_idx=3, max_logit_sum=torch.tensor(0.8)
         )
         self.assertEqual(expected_pred, pred)
 
@@ -234,7 +222,7 @@ class TestFindStartEnd(unittest.TestCase):
         pred = ls_find_start_end(raw_logits, mask, threshold)
 
         expected_pred = Prediction(
-            start_idx=0, exclusive_end_idx=3, max_logit_sum=torch.tensor(0.6)
+            start_idx=0, inclusive_end_idx=2, max_logit_sum=torch.tensor(0.6)
         )
         self.assertEqual(expected_pred, pred)
 
@@ -275,8 +263,6 @@ class TestTrainTweetDataset(TweetTestCase):
             input_id_list=tensor([101, 19082, 1362, 1181, 102]),
             input_id_mask=tensor([1, 1, 1, 1, 1]),
             sentiment=tensor(2),
-            selected_ids_start_end_idx=tensor([2, 4]),
-            selected_text="worldd",
             input_id_is_selected=tensor([0.0, 0.0, 1.0, 1.0, 0.0]),
         )
         self.assertListEqual([], dataset.error_indexes)
