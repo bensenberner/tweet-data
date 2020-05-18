@@ -205,29 +205,6 @@ class Prediction(NamedTuple):
     max_logit_sum: torch.Tensor
 
 
-def ls_find_start_end(raw_logits: torch.Tensor, mask: torch.Tensor, threshold: float):
-    logits = raw_logits - threshold
-    max_so_far = logits[0]
-    cur_max = logits[0]
-    start_idx = 0
-    max_start_idx, max_end_idx = 0, 0
-    num_tokens_including_cls_and_seq = int(mask.sum())
-    for i in range(1, num_tokens_including_cls_and_seq - 1):  # do this to exclude seq at the end
-        if logits[i] > cur_max + logits[i]:
-            cur_max = logits[i]
-            start_idx = i
-        else:
-            cur_max = cur_max + logits[i]
-        if max_so_far < cur_max:
-            max_so_far = cur_max
-            max_start_idx = start_idx
-            max_end_idx = i
-
-    return Prediction(
-        start_idx=max_start_idx, inclusive_end_idx=max_end_idx, max_logit_sum=max_so_far
-    )
-
-
 def differentiable_log_jaccard(logits: torch.Tensor, actual: torch.Tensor) -> torch.Tensor:
     A = torch.sigmoid(logits)
     B = actual
@@ -368,6 +345,30 @@ class ModelPipeline:
             secondary_bar.close()
         return losses
 
+    def ls_find_start_end(self, raw_logits: torch.Tensor, mask: torch.Tensor):
+        logits = raw_logits - self.prediction_threshold
+        max_so_far = logits[0]
+        cur_max = logits[0]
+        start_idx = 0
+        max_start_idx, max_end_idx = 0, 0
+        num_tokens_including_cls_and_seq = int(mask.sum())
+        for i in range(
+            1, num_tokens_including_cls_and_seq - 1
+        ):  # do this to exclude seq at the end
+            if logits[i] > cur_max + logits[i]:
+                cur_max = logits[i]
+                start_idx = i
+            else:
+                cur_max = cur_max + logits[i]
+            if max_so_far < cur_max:
+                max_so_far = cur_max
+                max_start_idx = start_idx
+                max_end_idx = i
+
+        return Prediction(
+            start_idx=max_start_idx, inclusive_end_idx=max_end_idx, max_logit_sum=max_so_far
+        )
+
     def pred_selected_text(self, dataset: _TweetDataset, batch_size=128) -> List[str]:
         predicted_selected_texts = []
         # TODO: do I really need a dataloader for doing prediction?
@@ -381,7 +382,7 @@ class ModelPipeline:
                 )
             prediction_vectors = torch.sigmoid(logits)
             preds = [
-                ls_find_start_end(prediction_vector, input_id_mask, self.prediction_threshold)
+                self.ls_find_start_end(prediction_vector, input_id_mask)
                 for prediction_vector, input_id_mask in zip(prediction_vectors, batch.input_id_mask)
             ]
             for idx, pred in zip(batch.idx, preds):

@@ -15,7 +15,7 @@ from kaggle_data_loader import (
     TrainData,
     TestData,
     Prediction,
-    ls_find_start_end,
+    ModelPipeline,
 )
 
 BERT_MODEL_TYPE = "bert-base-cased"
@@ -199,13 +199,25 @@ class TestLabelData(TweetTestCase):
             LabelMaker(self.bert_tokenizer).make(row)
 
 
+def create_pipeline_with_threshold(threshold):
+    return ModelPipeline(
+        dev=None,
+        bert_tokenizer=None,
+        model=None,
+        selected_id_loss_fn=None,
+        optim=True,
+        prediction_threshold=threshold,
+    )
+
+
 class TestFindStartEnd(unittest.TestCase):
     def test_entire(self):
         raw_logits = torch.tensor([0.1, 0.2, 0.3, 0.2, 0.1])
         mask = torch.tensor([1, 1, 1, 1, 1])
         threshold = 0
 
-        pred = ls_find_start_end(raw_logits, mask, threshold)
+        pipeline = create_pipeline_with_threshold(threshold)
+        pred = pipeline.ls_find_start_end(raw_logits, mask)
 
         # note the max_logit_sum. That means that the last value was NOT included in the range.
         # this is because we assume the last token (with mask = 1) to be the [SEQ] token which we don't include
@@ -219,7 +231,8 @@ class TestFindStartEnd(unittest.TestCase):
         mask = torch.tensor([1, 1, 1, 1, 0])
         threshold = 0
 
-        pred = ls_find_start_end(raw_logits, mask, threshold)
+        pipeline = create_pipeline_with_threshold(threshold)
+        pred = pipeline.ls_find_start_end(raw_logits, mask)
 
         expected_pred = Prediction(
             start_idx=0, inclusive_end_idx=2, max_logit_sum=torch.tensor(0.6)
