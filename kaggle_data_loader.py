@@ -288,7 +288,6 @@ class ModelPipeline:
         selected_id_loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         optim: Optional[Optimizer] = None,
         learning_rate: float = 0.001,
-        prediction_threshold: float = 0.6,
     ):
         """
         :param dev: where computations are to be run
@@ -296,16 +295,12 @@ class ModelPipeline:
         :param model: just needs to implement forward()
         :param selected_id_loss_fn: takes in predicted logits and actual labels (which are between 0 and 1) for multiple examples, and returns the loss for each example
         :param learning_rate: learning rate for the optimizer
-        :param prediction_threshold: when, for a given input text, we attempt to predict the selected text
-            we first produce a vector of logits representing the probability that each individual BERT token
-            derived from the input text is or is not "selected."
         """
         self.bert_tokenizer = bert_tokenizer
         self.dev = dev
         self.model = model
         self.optim = Adam(model.parameters(), lr=learning_rate) if not optim else optim
         self.selected_id_loss_fn = selected_id_loss_fn
-        self.prediction_threshold = prediction_threshold
 
     def _get_loss(self, train_data: TrainData) -> torch.Tensor:
         batch_size = train_data.input_id_list.shape[0]
@@ -345,8 +340,19 @@ class ModelPipeline:
             secondary_bar.close()
         return losses
 
-    def ls_find_start_end(self, raw_logits: torch.Tensor, mask: torch.Tensor):
-        logits = raw_logits - self.prediction_threshold
+    @staticmethod
+    def ls_find_start_end(
+        raw_logits: torch.Tensor, mask: torch.Tensor, prediction_threshold: float
+    ):
+        """
+        :param raw_logits:
+        :param mask:
+        :param prediction_threshold: when, for a given input text, we attempt to predict the selected text
+            we first produce a vector of logits representing the probability that each individual BERT token
+            derived from the input text is or is not "selected."
+        :return:
+        """
+        logits = raw_logits - prediction_threshold
         max_so_far = logits[0]
         cur_max = logits[0]
         start_idx = 0
@@ -369,7 +375,9 @@ class ModelPipeline:
             start_idx=max_start_idx, inclusive_end_idx=max_end_idx, max_logit_sum=max_so_far
         )
 
-    def pred_selected_text(self, dataset: _TweetDataset, batch_size=128) -> List[str]:
+    def pred_selected_text(
+        self, dataset: _TweetDataset, prediction_threshold: float, batch_size=128
+    ) -> List[str]:
         predicted_selected_texts = []
         # TODO: do I really need a dataloader for doing prediction?
         data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -382,7 +390,7 @@ class ModelPipeline:
                 )
             prediction_vectors = torch.sigmoid(logits)
             preds = [
-                self.ls_find_start_end(prediction_vector, input_id_mask)
+                self.ls_find_start_end(prediction_vector, input_id_mask, prediction_threshold)
                 for prediction_vector, input_id_mask in zip(prediction_vectors, batch.input_id_mask)
             ]
             for idx, pred in zip(batch.idx, preds):
@@ -396,8 +404,8 @@ class ModelPipeline:
                 predicted_selected_texts.append(predicted_selected_text)
         return predicted_selected_texts
 
-    def jaccard_scores(self, dataset, actual_selected_texts):
-        predicted_selected_texts = self.pred_selected_text(dataset)
+    def jaccard_scores(self, dataset, actual_selected_texts, prediction_threshold):
+        predicted_selected_texts = self.pred_selected_text(dataset, prediction_threshold)
         return pd.Series(
             [
                 jaccard(pred_sel_text, actual_sel_text)
@@ -423,26 +431,25 @@ def main():
     train_data_loader = data.DataLoader(train_dataset, batch_size=1, shuffle=False)
     dev = "cuda:0" if torch.cuda.is_available() else "cpu"
     # TODO: make this trainable
-    threshold = 0.6
+    prediction_threshold = 0.6
     pipeline = ModelPipeline(
         dev=dev,
         bert_tokenizer=bert_tokenizer_,
         model=NetworkV3(BERT_MODEL_TYPE).to(dev),
         selected_id_loss_fn=differentiable_log_jaccard,
-        prediction_threshold=threshold,
     )
     pipeline.fit(train_data_loader, 1)
-    pipeline.pred_selected_text(train_dataset)
+    pipeline.pred_selected_text(train_dataset, prediction_threshold)
     actual_selected_texts = train_df_.loc[set(train_df_.index) - set(train_dataset.error_indexes)][
         "selected_text"
     ]
-    print(pipeline.jaccard_scores(train_dataset, actual_selected_texts))
+    print(pipeline.jaccard_scores(train_dataset, actual_selected_texts, prediction_threshold))
 
     test_df = pd.DataFrame(
         {"text": ["hi worldd", "hello moon"], "sentiment": ["neutral", "positive"]}
     )
     test_dataset = TestTweetDataset(test_df, bert_tokenizer_)
-    print(pipeline.pred_selected_text(test_dataset))
+    print(pipeline.pred_selected_text(test_dataset, prediction_threshold))
 
 
 if __name__ == "__main__":
