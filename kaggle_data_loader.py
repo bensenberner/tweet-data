@@ -132,7 +132,7 @@ class _TweetDataset(data.Dataset):
         sentiments_raw = []
         for row in df.itertuples():
             self.indexes.append(row.Index)
-            bert_input_ids_unpadded.append(bert_tokenizer.encode(row.text))
+            bert_input_ids_unpadded.append(bert_tokenizer.encode(row.text, add_special_tokens=True))
             self.tokenized_strings[row.Index] = TokenizedText(bert_tokenizer, row.text)
             sentiments_raw.append(self.SENTIMENT_MAP.get(row.sentiment))
         # this is X, the input matrix we will feed into the model.
