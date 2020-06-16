@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import List, Tuple, Iterable, Optional, Callable, NamedTuple
 
 import pandas as pd
@@ -121,10 +122,18 @@ class TestData(NamedTuple):
     sentiment: torch.Tensor
 
 
+class Sentiment(Enum):
+    NEGATIVE = "negative"
+    POSITIVE = "positive"
+    NEUTRAL = "neutral"
+
+    def get_val(self):
+        _map = {Sentiment.NEGATIVE: 0, Sentiment.POSITIVE: 1, Sentiment.NEUTRAL: 2}
+        return _map.get(self)
+
+
 # not meant to be directly instantiated in order to avoid confusion regarding subclassing
 class _TweetDataset(data.Dataset):
-    SENTIMENT_MAP = {"negative": 0, "positive": 1, "neutral": 2}
-
     def __init__(self, df, bert_tokenizer):
         self.indexes = []  # the index of the row from the original df
         bert_input_ids_unpadded = []
@@ -134,7 +143,7 @@ class _TweetDataset(data.Dataset):
             self.indexes.append(row.Index)
             bert_input_ids_unpadded.append(bert_tokenizer.encode(row.text, add_special_tokens=True))
             self.tokenized_strings[row.Index] = TokenizedText(bert_tokenizer, row.text)
-            sentiments_raw.append(self.SENTIMENT_MAP.get(row.sentiment))
+            sentiments_raw.append(Sentiment(row.sentiment).get_val())
         # this is X, the input matrix we will feed into the model.
         self.bert_input_id_lists: torch.Tensor = pad_sequence(
             [torch.tensor(e) for e in bert_input_ids_unpadded], batch_first=True
@@ -359,8 +368,8 @@ class ModelPipeline:
         max_start_idx, max_end_idx = 0, 0
         num_tokens_including_cls_and_seq = int(mask.sum())
         for i in range(
-            1, num_tokens_including_cls_and_seq - 1
-        ):  # do this to exclude seq at the end
+            1, num_tokens_including_cls_and_seq - 1  # do this to exclude seq at the end
+        ):
             if logits[i] > cur_max + logits[i]:
                 cur_max = logits[i]
                 start_idx = i
@@ -376,8 +385,9 @@ class ModelPipeline:
         )
 
     def pred_selected_text(
-        self, dataset: _TweetDataset, prediction_threshold: float, batch_size=128
+        self, dataset: _TweetDataset, prediction_threshold: float, batch_size=128, num_samples=None
     ) -> List[str]:
+        num_samples = num_samples if num_samples else len(dataset)
         predicted_selected_texts = []
         # TODO: do I really need a dataloader for doing prediction?
         data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -402,9 +412,11 @@ class ModelPipeline:
                     pred_start_idx - 1, pred.inclusive_end_idx - 1,
                 )
                 predicted_selected_texts.append(predicted_selected_text)
+                if num_samples and len(predicted_selected_texts) >= num_samples:
+                    return predicted_selected_texts
         return predicted_selected_texts
 
-    def jaccard_scores(self, dataset, actual_selected_texts, prediction_threshold):
+    def jaccard_scores(self, dataset, actual_selected_texts, prediction_threshold) -> pd.Series:
         predicted_selected_texts = self.pred_selected_text(dataset, prediction_threshold)
         return pd.Series(
             [
@@ -422,16 +434,14 @@ def main():
     bert_tokenizer_ = transformers.BertTokenizer.from_pretrained(BERT_MODEL_TYPE)
     train_df_ = pd.DataFrame(
         {
-            "text": ["hello worldd", "selected text wrong", "hi moon"],
+            "text": ["hello happy worldd", "selected text wrong", "hi moon"],
             "sentiment": ["neutral", "negative", "positive"],
-            "selected_text": ["worldd", "not present in text", "hi moon"],
+            "selected_text": ["happy", "not present in text", "hi moon"],
         }
     )
     train_dataset = TrainTweetDataset(train_df_, bert_tokenizer_)
     train_data_loader = data.DataLoader(train_dataset, batch_size=1, shuffle=False)
     dev = "cuda:0" if torch.cuda.is_available() else "cpu"
-    # TODO: make this trainable
-    prediction_threshold = 0.6
     pipeline = ModelPipeline(
         dev=dev,
         bert_tokenizer=bert_tokenizer_,
@@ -439,17 +449,22 @@ def main():
         selected_id_loss_fn=differentiable_log_jaccard,
     )
     pipeline.fit(train_data_loader, 1)
-    pipeline.pred_selected_text(train_dataset, prediction_threshold)
     actual_selected_texts = train_df_.loc[set(train_df_.index) - set(train_dataset.error_indexes)][
         "selected_text"
     ]
-    print(pipeline.jaccard_scores(train_dataset, actual_selected_texts, prediction_threshold))
+    threshold_to_jaccard_score = {}
+    # TODO: pick the best one
+    for prediction_threshold in (x / 10 for x in range(1, 9)):
+        threshold_to_jaccard_score[prediction_threshold] = pipeline.jaccard_scores(
+            train_dataset, actual_selected_texts, prediction_threshold
+        ).mean()
+    print(threshold_to_jaccard_score)
 
     test_df = pd.DataFrame(
         {"text": ["hi worldd", "hello moon"], "sentiment": ["neutral", "positive"]}
     )
     test_dataset = TestTweetDataset(test_df, bert_tokenizer_)
-    print(pipeline.pred_selected_text(test_dataset, prediction_threshold))
+    print(pipeline.pred_selected_text(test_dataset, prediction_threshold=0.6))
 
 
 if __name__ == "__main__":
