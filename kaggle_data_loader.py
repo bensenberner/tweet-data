@@ -350,7 +350,7 @@ class ModelPipeline:
         return losses
 
     @staticmethod
-    def ls_find_start_end(
+    def _find_max_subarray_idxes(
         raw_logits: torch.Tensor, mask: torch.Tensor, prediction_threshold: float
     ):
         """
@@ -400,7 +400,9 @@ class ModelPipeline:
                 )
             prediction_vectors = torch.sigmoid(logits)
             preds = [
-                self.ls_find_start_end(prediction_vector, input_id_mask, prediction_threshold)
+                self._find_max_subarray_idxes(
+                    prediction_vector, input_id_mask, prediction_threshold
+                )
                 for prediction_vector, input_id_mask in zip(prediction_vectors, batch.input_id_mask)
             ]
             for idx, pred in zip(batch.idx, preds):

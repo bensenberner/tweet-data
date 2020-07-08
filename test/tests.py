@@ -205,7 +205,7 @@ class TestFindStartEnd(unittest.TestCase):
         mask = torch.tensor([1, 1, 1, 1, 1])
         threshold = 0
 
-        pred = ModelPipeline.ls_find_start_end(raw_logits, mask, threshold)
+        pred = ModelPipeline._find_max_subarray_idxes(raw_logits, mask, threshold)
 
         # note the max_logit_sum. That means that the last value was NOT included in the range.
         # this is because we assume the last token (with mask = 1) to be the [SEQ] token which we don't include
@@ -219,7 +219,7 @@ class TestFindStartEnd(unittest.TestCase):
         mask = torch.tensor([1, 1, 1, 1, 0])
         threshold = 0
 
-        pred = ModelPipeline.ls_find_start_end(raw_logits, mask, threshold)
+        pred = ModelPipeline._find_max_subarray_idxes(raw_logits, mask, threshold)
 
         expected_pred = Prediction(
             start_idx=0, inclusive_end_idx=2, max_logit_sum=torch.tensor(0.6)
